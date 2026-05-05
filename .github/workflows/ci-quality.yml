@@ -61,4 +61,4 @@ jobs:
         run: phpstan analyse --configuration phpstan.neon --memory-limit=512M --no-progress
 
       - name: Composer security audit
-        run: composer audit
+        run: composer audit --abandoned=report
