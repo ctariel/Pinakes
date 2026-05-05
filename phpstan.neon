@@ -8,7 +8,6 @@ parameters:
 		- config/
 		- public/index.php
 	scanDirectories:
-		- server/src
 		- storage/plugins
 	phpVersion: 80100
 	reportUnmatchedIgnoredErrors: false
