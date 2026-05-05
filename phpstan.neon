@@ -9,5 +9,5 @@ parameters:
 		- public/index.php
 	scanDirectories:
 		- storage/plugins
-	phpVersion: 80100
+	phpVersion: 80200
 	reportUnmatchedIgnoredErrors: false
