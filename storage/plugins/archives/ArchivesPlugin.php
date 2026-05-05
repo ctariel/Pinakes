@@ -4372,6 +4372,19 @@ class ArchivesPlugin
                 ]],
             ];
         }
+        // IIIF 3.0 §3.3: items must have cardinality ≥ 1.
+        // When no local image is available, serve a minimal placeholder Canvas
+        // so clients receive a valid (if unpainted) manifest.
+        if (empty($items)) {
+            $canvasId = $manifestId . '/canvas/placeholder';
+            $items[]  = [
+                'id'     => $canvasId,
+                'type'   => 'Canvas',
+                'label'  => ['none' => ['[No digital image available]']],
+                'width'  => 1,
+                'height' => 1,
+            ];
+        }
         $manifest['items'] = $items;
 
         // structures: nested IIIF Range hierarchy (§1.1)
@@ -5181,6 +5194,29 @@ class ArchivesPlugin
             }
             $xw->endElement(); // langmaterial
         }
+        // <daoset> must be a child of <did> per EAD3 schema
+        $unitId = (int) ($row['id'] ?? 0);
+        if ($unitId > 0) {
+            $xw->startElement('daoset');
+            $xw->writeAttribute('coverage', 'whole');
+            $xw->startElement('dao');
+            $xw->writeAttribute('daotype', 'derived');
+            $xw->writeAttribute('href', (string) absoluteUrl('/archives/' . $unitId . '/manifest.json'));
+            $xw->writeAttribute('linktitle', 'IIIF Manifest');
+            $xw->writeAttribute('actuate', 'onrequest');
+            $xw->writeAttribute('show', 'new');
+            $xw->endElement(); // dao
+            if (!empty($row['cover_image_path'])) {
+                $xw->startElement('dao');
+                $xw->writeAttribute('daotype', 'borndigital');
+                $xw->writeAttribute('href', (string) absoluteUrl('/' . ltrim((string) $row['cover_image_path'], '/')));
+                $xw->writeAttribute('linktitle', 'Cover image');
+                $xw->writeAttribute('actuate', 'onrequest');
+                $xw->writeAttribute('show', 'embed');
+                $xw->endElement(); // dao
+            }
+            $xw->endElement(); // daoset
+        }
         $xw->endElement(); // did
 
         // Narrative elements
@@ -5243,32 +5279,6 @@ class ArchivesPlugin
                 $xw->endElement();
             }
             $xw->endElement(); // controlaccess
-        }
-
-        // <dao>: link to the IIIF manifest (and cover image if available)
-        $unitId = (int) ($row['id'] ?? 0);
-        if ($unitId > 0) {
-            $xw->startElement('daoset');
-            $xw->writeAttribute('coverage', 'whole');
-            // IIIF manifest
-            $xw->startElement('dao');
-            $xw->writeAttribute('daotype', 'derived');
-            $xw->writeAttribute('href', (string) absoluteUrl('/archives/' . $unitId . '/manifest.json'));
-            $xw->writeAttribute('linktitle', 'IIIF Manifest');
-            $xw->writeAttribute('actuate', 'onrequest');
-            $xw->writeAttribute('show', 'new');
-            $xw->endElement(); // dao
-            // Cover image (if present)
-            if (!empty($row['cover_image_path'])) {
-                $xw->startElement('dao');
-                $xw->writeAttribute('daotype', 'borndigital');
-                $xw->writeAttribute('href', (string) absoluteUrl('/' . ltrim((string) $row['cover_image_path'], '/')));
-                $xw->writeAttribute('linktitle', 'Cover image');
-                $xw->writeAttribute('actuate', 'onrequest');
-                $xw->writeAttribute('show', 'embed');
-                $xw->endElement(); // dao
-            }
-            $xw->endElement(); // daoset
         }
 
         $xw->endElement(); // archdesc

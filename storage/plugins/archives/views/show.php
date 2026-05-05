@@ -223,13 +223,22 @@ $id = (int) $row['id'];
                 </div>
             <?php endif; ?>
             <?php if (!empty($row['rights_statement_url'])): ?>
+                <?php
+                $rightsUrl      = trim((string) $row['rights_statement_url']);
+                $isSafeRightsUrl = filter_var($rightsUrl, FILTER_VALIDATE_URL) !== false
+                    && (bool) preg_match('/^https?:\/\//i', $rightsUrl);
+                ?>
                 <div class="px-6 py-3 grid grid-cols-3 gap-4">
                     <dt class="text-sm font-medium text-gray-500"><?= __("Dichiarazione diritti") ?></dt>
                     <dd class="col-span-2 text-sm text-gray-900">
-                        <a href="<?= $e($row['rights_statement_url']) ?>" target="_blank" rel="noopener noreferrer"
-                           class="text-blue-600 hover:underline font-mono text-xs">
-                            <?= $v('rights_statement_url') ?>
-                        </a>
+                        <?php if ($isSafeRightsUrl): ?>
+                            <a href="<?= $e($rightsUrl) ?>" target="_blank" rel="noopener noreferrer"
+                               class="text-blue-600 hover:underline font-mono text-xs">
+                                <?= $e($rightsUrl) ?>
+                            </a>
+                        <?php else: ?>
+                            <span class="font-mono text-xs"><?= $e($rightsUrl) ?></span>
+                        <?php endif; ?>
                     </dd>
                 </div>
             <?php endif; ?>

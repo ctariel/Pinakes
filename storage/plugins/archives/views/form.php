@@ -245,7 +245,7 @@ $levelLabels = [
         <div class="mt-4">
             <label for="rights_statement_url" class="form-label">
                 <?= __("Dichiarazione dei diritti (URL)") ?>
-                <span class="text-xs text-gray-500 font-normal">(ISAD(G) 3.4.2 — es. <a href="https://rightsstatements.org" target="_blank" class="underline">rightsstatements.org</a>)</span>
+                <span class="text-xs text-gray-500 font-normal">(ISAD(G) 3.4.2 — es. <a href="https://rightsstatements.org" target="_blank" rel="noopener noreferrer" class="underline">rightsstatements.org</a>)</span>
             </label>
             <input type="url" name="rights_statement_url" id="rights_statement_url"
                    value="<?= $val('rights_statement_url') ?>" maxlength="500"

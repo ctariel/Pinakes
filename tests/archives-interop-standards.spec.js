@@ -46,6 +46,12 @@ function dbExec(sql) {
     execFileSync('mysql', mysqlArgs(sql), { encoding: 'utf-8', timeout: 10000 });
 }
 function cleanupTag(tag) {
+    // FK-safe: delete authority links first (archival_unit_authority.archival_unit_id → ON DELETE CASCADE
+    // would handle this automatically, but explicit deletion is more readable and defensive)
+    dbExec(`DELETE aua FROM archival_unit_authority aua
+            JOIN archival_units au ON au.id = aua.archival_unit_id
+            WHERE au.reference_code LIKE '${tag}%'`);
+    // self-FK (parent_id ON DELETE SET NULL): children first (parent_id IS NOT NULL), then roots
     dbExec(`DELETE FROM archival_units WHERE reference_code LIKE '${tag}%' AND parent_id IS NOT NULL`);
     dbExec(`DELETE FROM archival_units WHERE reference_code LIKE '${tag}%'`);
 }
