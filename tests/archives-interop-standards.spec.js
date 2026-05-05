@@ -300,7 +300,7 @@ test.describe.serial('Archives interoperability standards (25 tests)', () => {
         expect(JSON.stringify(arkMeta['value'])).toContain(ARK_ID);
 
         // ARK in seeAlso as n2t.net link
-        const arkSeeAlso = body['seeAlso'].find(
+        const arkSeeAlso = (body['seeAlso'] || []).find(
             (/** @type {any} */ s) => typeof s['id'] === 'string' && s['id'].startsWith('https://n2t.net/')
         );
         expect(arkSeeAlso).toBeDefined();
@@ -439,7 +439,7 @@ test.describe.serial('Archives interoperability standards (25 tests)', () => {
         // Area 1 — Identity Statement
         await expect(page.getByText('Identity Statement', { exact: false })).toBeVisible();
         // Area 3 — Content & Structure
-        await expect(page.getByText('Content', { exact: false }).first()).toBeVisible();
+        await expect(page.getByText('Content & Structure', { exact: false })).toBeVisible();
         // Area 4 — Conditions of Access & Use
         await expect(page.getByText('Conditions of Access', { exact: false })).toBeVisible();
         // New fields — verify inputs are present

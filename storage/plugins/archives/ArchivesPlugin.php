@@ -4092,7 +4092,7 @@ class ArchivesPlugin
         if (strlen($ark) > 255) {
             $errors['ark_identifier'] = 'ARK identifier troppo lungo (max 255 caratteri).';
         } elseif ($ark !== '') {
-            $sql = 'SELECT id FROM archival_units WHERE ark_identifier = ? AND deleted_at IS NULL';
+            $sql = 'SELECT id FROM archival_units WHERE ark_identifier = ?';
             if ($excludeId !== null) {
                 $sql .= ' AND id != ?';
             }
@@ -4597,7 +4597,7 @@ class ArchivesPlugin
                 "SELECT a.id, a.constructed_title, a.formal_title, a.level,
                         EXISTS(SELECT 1 FROM archival_units c WHERE c.parent_id = a.id AND c.deleted_at IS NULL) AS has_children
                    FROM archival_units a
-                  WHERE a.parent_id IS NULL AND a.deleted_at IS NULL
+                  WHERE a.parent_id IS NULL AND a.level = 'fonds' AND a.deleted_at IS NULL
                   ORDER BY a.reference_code"
             );
         } else {
