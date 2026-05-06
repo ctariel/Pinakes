@@ -253,17 +253,27 @@ class ViafAuthorityPlugin
         }
 
         $url = self::VIAF_SUGGEST_URL . urlencode($q);
-        $ctx = stream_context_create([
-            'http' => [
-                'timeout'         => self::API_TIMEOUT,
-                'follow_location' => 1,
-                'header'          => 'Accept: application/json',
-            ],
+        $ch  = curl_init($url);
+        if ($ch === false) {
+            return $this->json($response, ['error' => true, 'message' => __('Errore interno.')], 500);
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS      => 3,
+            CURLOPT_CONNECTTIMEOUT => self::API_TIMEOUT,
+            CURLOPT_TIMEOUT        => self::API_TIMEOUT + 5,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_PROTOCOLS      => CURLPROTO_HTTPS | CURLPROTO_HTTP,
+            CURLOPT_HTTPHEADER     => ['Accept: application/json'],
         ]);
+        $raw  = curl_exec($ch);
+        $curlErr  = curl_error($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
 
-        $raw = @file_get_contents($url, false, $ctx);
-        if ($raw === false) {
-            SecureLogger::warning('[ViafAuthority] VIAF API unreachable for query: ' . $q);
+        if ($raw === false || $curlErr !== '' || $httpCode < 200 || $httpCode >= 300) {
+            SecureLogger::warning('[ViafAuthority] VIAF API unreachable for query: ' . $q . ' — ' . $curlErr);
             return $this->json($response, [
                 'error'   => true,
                 'message' => __('Servizio VIAF non raggiungibile. Riprova più tardi.'),
@@ -353,6 +363,9 @@ class ViafAuthorityPlugin
         if (!$this->requireAdminOrStaff($response, $out, $request)) {
             return $out;
         }
+        if (!$this->validateCsrf($request)) {
+            return $this->json($response, ['error' => true, 'message' => __('Token CSRF non valido.')], 403);
+        }
 
         $body   = (array) ($request->getParsedBody() ?? []);
         $id     = (int) ($args['id'] ?? 0);
@@ -390,7 +403,10 @@ class ViafAuthorityPlugin
         $affected = $stmt->affected_rows;
         $stmt->close();
 
-        if (!$ok || $affected === 0) {
+        if (!$ok) {
+            return $this->json($response, ['error' => true, 'message' => __('Errore interno.')], 500);
+        }
+        if ($affected === 0 && !$this->authorExists($id)) {
             return $this->json($response, ['error' => true, 'message' => __('Autore non trovato.')], 404);
         }
 
@@ -409,6 +425,9 @@ class ViafAuthorityPlugin
     ): ResponseInterface {
         if (!$this->requireAdminOrStaff($response, $out, $request)) {
             return $out;
+        }
+        if (!$this->validateCsrf($request)) {
+            return $this->json($response, ['error' => true, 'message' => __('Token CSRF non valido.')], 403);
         }
 
         $body    = (array) ($request->getParsedBody() ?? []);
@@ -431,7 +450,10 @@ class ViafAuthorityPlugin
         $affected = $stmt->affected_rows;
         $stmt->close();
 
-        if (!$ok || $affected === 0) {
+        if (!$ok) {
+            return $this->json($response, ['error' => true, 'message' => __('Errore interno.')], 500);
+        }
+        if ($affected === 0 && !$this->authorExists($id)) {
             return $this->json($response, ['error' => true, 'message' => __('Autore non trovato.')], 404);
         }
 
@@ -726,6 +748,30 @@ class ViafAuthorityPlugin
         $stmt->close();
         if ($row === null) { return false; }
         return password_verify($pass, (string) $row['password']);
+    }
+
+    /** Validates CSRF token from body (csrf_token) or X-CSRF-Token header. Only required for session auth. */
+    private function validateCsrf(ServerRequestInterface $request): bool
+    {
+        // Basic Auth requests don't carry a session, so CSRF doesn't apply.
+        $authHeader = $request->getHeaderLine('Authorization');
+        if (str_starts_with($authHeader, 'Basic ')) {
+            return true;
+        }
+        $body  = (array) ($request->getParsedBody() ?? []);
+        $token = (string) ($body['csrf_token'] ?? $request->getHeaderLine('X-CSRF-Token'));
+        return \App\Support\Csrf::validate($token !== '' ? $token : null);
+    }
+
+    private function authorExists(int $id): bool
+    {
+        $stmt = $this->db->prepare('SELECT 1 FROM autori WHERE id = ? LIMIT 1');
+        if ($stmt === false) { return false; }
+        $stmt->bind_param('i', $id);
+        $stmt->execute();
+        $exists = $stmt->get_result()->num_rows > 0;
+        $stmt->close();
+        return $exists;
     }
 
     /**

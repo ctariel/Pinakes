@@ -22,9 +22,10 @@ use Psr\Http\Message\ServerRequestInterface;
  */
 class ResourceSyncPlugin
 {
-    private const RS_NS  = 'http://www.openarchives.org/rs/terms/';
-    private const SM_NS  = 'http://www.sitemaps.org/schemas/sitemap/0.9';
-    private const XMLNS  = 'http://www.w3.org/2000/xmlns/';
+    private const RS_NS    = 'http://www.openarchives.org/rs/terms/';
+    private const SM_NS    = 'http://www.sitemaps.org/schemas/sitemap/0.9';
+    private const XMLNS    = 'http://www.w3.org/2000/xmlns/';
+    private const PAGE_SIZE = 500;
 
     /** @phpstan-ignore-next-line property.onlyWritten */
     private HookManager $hookManager;
@@ -163,9 +164,11 @@ class ResourceSyncPlugin
         ServerRequestInterface $request,
         ResponseInterface $response
     ): ResponseInterface {
-        $base  = $this->baseUrl($request);
-        $books = $this->fetchBooks();
-        $xml   = $this->buildResourceList($base, $books);
+        $base   = $this->baseUrl($request);
+        $params = $request->getQueryParams();
+        $page   = max(0, (int) ($params['page'] ?? 0));
+        $books  = $this->fetchBooks($page);
+        $xml    = $this->buildResourceList($base, $books, $page);
         return $this->xmlResponse($response, $xml);
     }
 
@@ -262,7 +265,7 @@ class ResourceSyncPlugin
     /**
      * @param array<int, array<string, mixed>> $books
      */
-    private function buildResourceList(string $base, array $books): string
+    private function buildResourceList(string $base, array $books, int $page = 0): string
     {
         $xw = new \XMLWriter();
         $xw->openMemory();
@@ -283,6 +286,19 @@ class ResourceSyncPlugin
         $xw->writeAttribute('href', $base . '/resync/capabilitylist.xml');
         $xw->endElement();
 
+        if ($page > 0) {
+            $xw->startElementNs('rs', 'ln', null);
+            $xw->writeAttribute('rel', 'prev');
+            $xw->writeAttribute('href', $base . '/resync/resourcelist.xml?page=' . ($page - 1));
+            $xw->endElement();
+        }
+        if (count($books) === self::PAGE_SIZE) {
+            $xw->startElementNs('rs', 'ln', null);
+            $xw->writeAttribute('rel', 'next');
+            $xw->writeAttribute('href', $base . '/resync/resourcelist.xml?page=' . ($page + 1));
+            $xw->endElement();
+        }
+
         foreach ($books as $book) {
             $id        = (int) $book['id'];
             $modified  = $this->w3cDate((string) ($book['updated_at'] ?? $book['created_at'] ?? ''));
@@ -293,7 +309,6 @@ class ResourceSyncPlugin
             $xw->writeElement('lastmod', $modified);
             $xw->startElementNs('rs', 'md', null);
             $xw->writeAttribute('type', 'application/ld+json');
-            $xw->writeAttribute('length', '0');
             $xw->endElement();
             $xw->endElement(); // url
         }
@@ -359,17 +374,21 @@ class ResourceSyncPlugin
     /**
      * @return array<int, array<string, mixed>>
      */
-    private function fetchBooks(): array
+    private function fetchBooks(int $page = 0): array
     {
-        $stmt = $this->db->prepare(
+        $offset = $page * self::PAGE_SIZE;
+        $stmt   = $this->db->prepare(
             'SELECT id, updated_at, created_at
              FROM libri
              WHERE deleted_at IS NULL
-             ORDER BY id ASC'
+             ORDER BY id ASC
+             LIMIT ? OFFSET ?'
         );
         if ($stmt === false) {
             return [];
         }
+        $limit = self::PAGE_SIZE;
+        $stmt->bind_param('ii', $limit, $offset);
         $stmt->execute();
         /** @var array<int, array<string, mixed>> $rows */
         $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -382,7 +401,7 @@ class ResourceSyncPlugin
      */
     private function fetchChangedBooks(?string $since): array
     {
-        if ($since !== null && !preg_match('/^\d{4}-\d{2}-\d{2}/', $since)) {
+        if ($since !== null && !preg_match('/^\d{4}-\d{2}-\d{2}(T[\d:]+Z?)?$/', $since)) {
             $since = null;
         }
 

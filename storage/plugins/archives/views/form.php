@@ -179,10 +179,14 @@ $levelLabels = [
             <input type="text" name="ark_identifier" id="ark_identifier"
                    value="<?= $val('ark_identifier') ?>" maxlength="255"
                    placeholder="ark:/NAAN/name"
-                   class="form-input font-mono text-sm">
+                   class="form-input font-mono text-sm <?= $err('ark_identifier') ? 'border-red-500' : '' ?>">
+            <?php if ($err('ark_identifier')): ?>
+                <p class="mt-1 text-xs text-red-600"><?= $e($err('ark_identifier')) ?></p>
+            <?php else: ?>
             <p class="mt-1 text-xs text-gray-500">
                 <?= __("Identificatore persistente ARK assegnato dall'istituzione. Usato come URI canonico in EAD3, Dublin Core e manifest IIIF.") ?>
             </p>
+            <?php endif; ?>
         </div>
         </div><!-- end Area 1 -->
 
@@ -250,10 +254,14 @@ $levelLabels = [
             <input type="url" name="rights_statement_url" id="rights_statement_url"
                    value="<?= $val('rights_statement_url') ?>" maxlength="500"
                    placeholder="https://rightsstatements.org/vocab/InC/1.0/"
-                   class="form-input font-mono text-sm">
+                   class="form-input font-mono text-sm <?= $err('rights_statement_url') ? 'border-red-500' : '' ?>">
+            <?php if ($err('rights_statement_url')): ?>
+                <p class="mt-1 text-xs text-red-600"><?= $e($err('rights_statement_url')) ?></p>
+            <?php else: ?>
             <p class="mt-1 text-xs text-gray-500">
                 <?= __("URI standard (RightsStatements.org o Creative Commons) incluso nel manifest IIIF come campo 'rights'.") ?>
             </p>
+            <?php endif; ?>
         </div>
         </div><!-- end Area 4 -->
 
@@ -409,10 +417,14 @@ $levelLabels = [
             <input type="url" name="iiif_manifest_url" id="iiif_manifest_url"
                    value="<?= $val('iiif_manifest_url') ?>" maxlength="2000"
                    placeholder="https://iiif.example.org/manifests/archive-1/manifest.json"
-                   class="form-input font-mono text-sm">
+                   class="form-input font-mono text-sm <?= $err('iiif_manifest_url') ? 'border-red-500' : '' ?>">
+            <?php if ($err('iiif_manifest_url')): ?>
+                <p class="mt-1 text-xs text-red-600"><?= $e($err('iiif_manifest_url')) ?></p>
+            <?php else: ?>
             <p class="mt-1 text-xs text-gray-500">
                 <?= __("Se l'istituzione ha un server IIIF (Cantaloupe, IIPImage, Loris), incolla qui l'URL del manifest. Pinakes genera comunque un manifest base da /archives/{id}/manifest.json.") ?>
             </p>
+            <?php endif; ?>
         </div>
 
         <div class="flex items-center justify-end space-x-3 pt-4 border-t">

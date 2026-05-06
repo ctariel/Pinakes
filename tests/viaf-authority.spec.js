@@ -92,6 +92,18 @@ test.describe.serial('VIAF Authority + ISNI plugin — v1.1.0 (16 tests)', () =>
         }
     });
 
+    test.afterAll(async () => {
+        if (testAuthorId > 0) {
+            try {
+                dbQuery(
+                    `UPDATE autori SET viaf_id = NULL, viaf_uri = NULL, isni_id = NULL,
+                     isni_uri = NULL, authority_source = NULL, authority_confidence = NULL
+                     WHERE id = ${testAuthorId}`
+                );
+            } catch { /* best-effort */ }
+        }
+    });
+
     // ── Test 1: Plugin registration ──────────────────────────────────────────
 
     test('1. viaf-authority plugin registered', async () => {

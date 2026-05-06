@@ -421,11 +421,6 @@ class BibframeLinkedDataPlugin
             ];
         }
 
-        // VIAF link on Work if author has viaf_id
-        if ($viafId !== '') {
-            $work['owl:sameAs'] = ['@id' => 'https://viaf.org/viaf/' . rawurlencode($viafId)];
-        }
-
         return [
             '@context' => [
                 'bf'   => self::BF_NS,
@@ -495,7 +490,7 @@ class BibframeLinkedDataPlugin
             }
             foreach ($node as $prop => $val) {
                 if (in_array($prop, ['@id', '@type'], true) || !is_array($val)) { continue; }
-                $turtleVal = $this->turtleValue($val, $ctx);
+                $turtleVal = $this->turtleValues($val, $ctx);
                 if ($turtleVal !== '') {
                     $lines[] = '    ' . $prop . ' ' . $turtleVal . ' ;';
                 }
@@ -511,6 +506,30 @@ class BibframeLinkedDataPlugin
         }
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * Serialize a predicate value for Turtle, handling both single nodes and numeric lists.
+     *
+     * @param array<mixed> $val
+     * @param array<string, string> $ctx
+     */
+    private function turtleValues(array $val, array $ctx): string
+    {
+        // Numeric-indexed array → multi-value predicate (e.g. bf:contribution, bf:subject)
+        if (array_is_list($val)) {
+            $items = [];
+            foreach ($val as $item) {
+                if (is_array($item)) {
+                    $rendered = $this->turtleValue($item, $ctx);
+                    if ($rendered !== '') {
+                        $items[] = $rendered;
+                    }
+                }
+            }
+            return implode(' , ', $items);
+        }
+        return $this->turtleValue($val, $ctx);
     }
 
     /**
@@ -542,13 +561,19 @@ class BibframeLinkedDataPlugin
             return '"' . $v . '"';
         }
         if (isset($val['@type'])) {
-            // Blank node
-            $type = (string) $val['@type'];
-            $label = (string) ($val['rdfs:label'] ?? $val['rdf:value'] ?? '');
-            if ($label !== '') {
-                return '[ a ' . $type . ' ; rdfs:label "' . addslashes($label) . '" ]';
+            // Blank node — serialize all properties recursively
+            $type  = (string) $val['@type'];
+            $parts = ['a ' . $type];
+            foreach ($val as $prop => $propVal) {
+                if (in_array($prop, ['@id', '@type'], true) || !is_array($propVal)) {
+                    continue;
+                }
+                $inner = $this->turtleValues($propVal, $ctx);
+                if ($inner !== '') {
+                    $parts[] = $prop . ' ' . $inner;
+                }
             }
-            return '[ a ' . $type . ' ]';
+            return '[ ' . implode(' ; ', $parts) . ' ]';
         }
         return '';
     }

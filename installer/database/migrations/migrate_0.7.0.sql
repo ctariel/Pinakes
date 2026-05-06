@@ -55,7 +55,7 @@ SET @col_exists = (
 );
 SET @sql = IF(
     @col_exists = 0,
-    'ALTER TABLE autori ADD COLUMN isni_id CHAR(19) DEFAULT NULL AFTER viaf_uri',
+    'ALTER TABLE autori ADD COLUMN isni_id VARCHAR(16) DEFAULT NULL AFTER viaf_uri',
     'SELECT 1'
 );
 PREPARE _stmt FROM @sql;
@@ -173,14 +173,14 @@ VALUES
      '8.1',
      '0.7.0',
      '{"category":"authority","tags":["viaf","isni","authority-control","authors","interoperability","linked-data"],"optional":true,"status":"stable"}',
-     NOW())
+     NOW()) AS new_row
 ON DUPLICATE KEY UPDATE
-    display_name  = VALUES(display_name),
-    description   = VALUES(description),
-    version       = VALUES(version),
-    plugin_url    = VALUES(plugin_url),
-    path          = VALUES(path),
-    main_file     = VALUES(main_file),
-    requires_php  = VALUES(requires_php),
-    requires_app  = VALUES(requires_app),
-    metadata      = VALUES(metadata);
+    display_name  = new_row.display_name,
+    description   = new_row.description,
+    version       = new_row.version,
+    plugin_url    = new_row.plugin_url,
+    path          = new_row.path,
+    main_file     = new_row.main_file,
+    requires_php  = new_row.requires_php,
+    requires_app  = new_row.requires_app,
+    metadata      = new_row.metadata;

@@ -91,7 +91,8 @@ test.describe.serial('Archives bug-fix regressions (5 tests)', () => {
         await page.waitForLoadState('domcontentloaded');
         const isActive = dbQuery("SELECT is_active FROM plugins WHERE name = 'archives'");
         if (isActive !== '1') {
-            const btn = page.locator('button[onclick^="activatePlugin("]').first();
+            const archivesId = dbQuery("SELECT id FROM plugins WHERE name = 'archives'");
+            const btn = page.locator(`button[onclick="activatePlugin(${archivesId})"]`);
             if (await btn.isVisible({ timeout: 3000 }).catch(() => false)) {
                 await btn.click();
                 const confirm = page.locator('.swal2-confirm').first();

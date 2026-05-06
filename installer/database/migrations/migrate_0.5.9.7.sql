@@ -241,17 +241,17 @@ VALUES
      '8.1',
      '0.5.9',
      '{"category":"archives","optional":true,"status":"phase-6"}',
-     NOW())
+     NOW()) AS new_row
 ON DUPLICATE KEY UPDATE
-    display_name  = VALUES(display_name),
-    description   = VALUES(description),
-    version       = VALUES(version),
-    plugin_url    = VALUES(plugin_url),
-    path          = VALUES(path),
-    main_file     = VALUES(main_file),
-    requires_php  = VALUES(requires_php),
-    requires_app  = VALUES(requires_app),
-    metadata      = VALUES(metadata);
+    display_name  = new_row.display_name,
+    description   = new_row.description,
+    version       = new_row.version,
+    plugin_url    = new_row.plugin_url,
+    path          = new_row.path,
+    main_file     = new_row.main_file,
+    requires_php  = new_row.requires_php,
+    requires_app  = new_row.requires_app,
+    metadata      = new_row.metadata;
 
 -- ─── Part 4: UNIQUE KEY on ark_identifier ────────────────────────────────────
 

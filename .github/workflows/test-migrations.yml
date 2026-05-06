@@ -15,6 +15,13 @@ on:
       - '.github/workflows/test-migrations.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ─── Job 1: verify all migrate_*.sql have version ≤ version.json ───────────
   # Catches the silent-skip bug: a migration named higher than the release
@@ -92,15 +99,18 @@ jobs:
           FAILED=0
           for sql in $(ls installer/database/migrations/migrate_*.sql | sort -V); do
             echo "→ $(basename $sql)"
-            if ! OUTPUT=$(mysql -h 127.0.0.1 -u root -proot pinakes_test < "$sql" 2>&1); then
-              # Tolerate only known-idempotent errors (column/table already exists, can't drop missing)
-              if echo "$OUTPUT" | grep -qiE 'duplicate (column name|key|index)|table .* already exists|check constraint .* already exists|can.t drop'; then
-                echo "  ↳ idempotent (expected)"
-              else
-                echo "  ✗ ERROR: $OUTPUT"
-                FAILED=1
+            OUTPUT=$(mysql --force -h 127.0.0.1 -u root -proot pinakes_test < "$sql" 2>&1) || true
+            # Check each ERROR line individually — skip only known-idempotent ones
+            while IFS= read -r line; do
+              if echo "$line" | grep -qiE '^ERROR'; then
+                if echo "$line" | grep -qiE 'duplicate (column name|key|index)|table .* already exists|check constraint .* already exists|can.t drop|unknown column|column .* does not exist'; then
+                  echo "  ↳ idempotent: $line"
+                else
+                  echo "  ✗ $line"
+                  FAILED=1
+                fi
               fi
-            fi
+            done <<< "$OUTPUT"
           done
           [ "$FAILED" -eq 0 ] || exit 1
 

@@ -4,6 +4,13 @@
 
 SET NAMES utf8mb4;
 
+-- Idempotent: clean up any stale entries from a prior run before re-seeding.
+DELETE oai_deleted_records FROM oai_deleted_records
+  JOIN libri ON oai_deleted_records.entity_id = libri.id
+  WHERE libri.titolo LIKE 'OAI Conformance Book %'
+    AND oai_deleted_records.entity_type = 'book';
+DELETE FROM libri WHERE titolo LIKE 'OAI Conformance Book %';
+
 INSERT INTO libri (titolo, isbn13, lingua, anno_pubblicazione, created_at, updated_at, deleted_at) VALUES ('OAI Conformance Book 1', '9780000000001', 'inglese', 2001, '2020-01-01 00:00:00', '2020-01-01 00:00:00', NULL);
 INSERT INTO libri (titolo, isbn13, lingua, anno_pubblicazione, created_at, updated_at, deleted_at) VALUES ('OAI Conformance Book 2', '9780000000002', 'tedesco', 2002, '2020-01-11 00:00:00', '2020-01-11 00:00:00', NULL);
 INSERT INTO libri (titolo, isbn13, lingua, anno_pubblicazione, created_at, updated_at, deleted_at) VALUES ('OAI Conformance Book 3', '9780000000003', 'francese', 2003, '2020-01-21 00:00:00', '2020-01-21 00:00:00', NULL);

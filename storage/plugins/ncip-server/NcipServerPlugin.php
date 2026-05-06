@@ -82,7 +82,7 @@ class NcipServerPlugin
 
     private function ensureSchema(): void
     {
-        $this->db->query(
+        if (!$this->db->query(
             "CREATE TABLE IF NOT EXISTS ncip_partners (
                 id           INT AUTO_INCREMENT PRIMARY KEY,
                 code         VARCHAR(64)   NULL DEFAULT NULL,
@@ -97,9 +97,11 @@ class NcipServerPlugin
                 UNIQUE KEY uq_code (code),
                 KEY idx_active (active)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
-        );
+        )) {
+            throw new \RuntimeException('[NcipServer] Cannot create ncip_partners: ' . $this->db->error);
+        }
 
-        $this->db->query(
+        if (!$this->db->query(
             "CREATE TABLE IF NOT EXISTS ncip_transactions (
                 id           INT AUTO_INCREMENT PRIMARY KEY,
                 partner_id   INT          NULL,
@@ -113,13 +115,17 @@ class NcipServerPlugin
                 KEY idx_status   (status),
                 KEY idx_prestito (prestito_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
-        );
+        )) {
+            throw new \RuntimeException('[NcipServer] Cannot create ncip_transactions: ' . $this->db->error);
+        }
 
         $cols = $this->getExistingColumns('prestiti');
         if (!isset($cols['ncip_request_id'])) {
-            $this->db->query(
+            if (!$this->db->query(
                 "ALTER TABLE prestiti ADD COLUMN ncip_request_id VARCHAR(255) NULL DEFAULT NULL AFTER origine"
-            );
+            )) {
+                throw new \RuntimeException('[NcipServer] Cannot alter prestiti (ncip_request_id): ' . $this->db->error);
+            }
         }
 
         $res = $this->db->query("SHOW COLUMNS FROM prestiti LIKE 'origine'");
@@ -127,9 +133,11 @@ class NcipServerPlugin
             $col = $res->fetch_assoc();
             $res->free();
             if (is_array($col) && is_string($col['Type'] ?? null) && !str_contains((string) $col['Type'], "'ncip'")) {
-                $this->db->query(
+                if (!$this->db->query(
                     "ALTER TABLE prestiti MODIFY COLUMN origine ENUM('richiesta','prenotazione','diretto','ncip') COLLATE utf8mb4_unicode_ci DEFAULT 'richiesta'"
-                );
+                )) {
+                    throw new \RuntimeException('[NcipServer] Cannot alter prestiti (origine): ' . $this->db->error);
+                }
             }
         }
     }
@@ -535,26 +543,33 @@ class NcipServerPlugin
             );
         }
 
-        $book = $this->fetchBook($itemId);
         $user = $this->fetchUser($userId);
-        if ($book === null || $user === null) {
+        if ($user === null) {
             return $this->xmlResponse(
                 $response,
-                $this->buildProblem('Item or user not found', 'http://www.niso.org/ncip/v2_02/schemes/processingerrortype/unknown-item')
+                $this->buildProblem('User not found', 'http://www.niso.org/ncip/v2_02/schemes/processingerrortype/unknown-user')
             );
         }
 
-        if ((int) ($book['copie_disponibili'] ?? 0) <= 0) {
-            return $this->xmlResponse(
-                $response,
-                $this->buildProblem('No copies available', 'http://www.niso.org/ncip/v2_02/schemes/processingerrortype/item-not-checked-in')
-            );
-        }
-
-        // Create loan — due date defaults to 30 days
+        // Atomic checkout: lock the book row so concurrent requests serialize.
         $dueDate = date('Y-m-d', strtotime('+30 days'));
-        $loanId  = $this->createLoan($itemId, $userId, $dueDate);
+        $loanId  = $this->createLoanAtomic($itemId, $userId, $dueDate);
+
         if ($loanId === null) {
+            // Re-read availability to distinguish "no copies" from "DB error"
+            $book = $this->fetchBook($itemId);
+            if ($book === null) {
+                return $this->xmlResponse(
+                    $response,
+                    $this->buildProblem('Item not found', 'http://www.niso.org/ncip/v2_02/schemes/processingerrortype/unknown-item')
+                );
+            }
+            if ((int) ($book['copie_disponibili'] ?? 0) <= 0) {
+                return $this->xmlResponse(
+                    $response,
+                    $this->buildProblem('No copies available', 'http://www.niso.org/ncip/v2_02/schemes/processingerrortype/item-not-checked-in')
+                );
+            }
             return $this->xmlResponse(
                 $response,
                 $this->buildProblem('Failed to create loan', 'http://www.niso.org/ncip/v2_02/schemes/processingerrortype/temporary-processing-failure')
@@ -1039,30 +1054,59 @@ class NcipServerPlugin
         return is_array($row) ? $row : null;
     }
 
-    private function createLoan(int $bookId, int $userId, string $dueDate): ?int
+    /**
+     * Atomic checkout: locks the book row to prevent double-booking under concurrent requests.
+     * Returns the new loan ID, or null if no copies are available or an error occurred.
+     */
+    private function createLoanAtomic(int $bookId, int $userId, string $dueDate): ?int
     {
-        $today = date('Y-m-d');
-        $stmt  = $this->db->prepare(
-            "INSERT INTO prestiti (libro_id, utente_id, data_prestito, data_scadenza, stato, origine, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 'in_corso', 'diretto', NOW(), NOW())"
-        );
-        if ($stmt === false) { return null; }
-        $stmt->bind_param('iiss', $bookId, $userId, $today, $dueDate);
-        if (!$stmt->execute()) { $stmt->close(); return null; }
-        $id = $stmt->insert_id;
-        $stmt->close();
+        $this->db->begin_transaction();
+        try {
+            // Lock the row exclusively so concurrent CheckOutItem requests serialize.
+            $lock = $this->db->prepare(
+                'SELECT copie_disponibili FROM libri WHERE id = ? AND deleted_at IS NULL FOR UPDATE'
+            );
+            if ($lock === false) {
+                $this->db->rollback();
+                return null;
+            }
+            $lock->bind_param('i', $bookId);
+            $lock->execute();
+            $res = $lock->get_result();
+            $row = $res ? $res->fetch_assoc() : null;
+            $lock->close();
 
-        // Decrement available copies
-        $upd = $this->db->prepare(
-            'UPDATE libri SET copie_disponibili = GREATEST(0, copie_disponibili - 1) WHERE id = ?'
-        );
-        if ($upd !== false) {
+            if ($row === null || (int) ($row['copie_disponibili'] ?? 0) <= 0) {
+                $this->db->rollback();
+                return null;
+            }
+
+            $today = date('Y-m-d');
+            $ins   = $this->db->prepare(
+                "INSERT INTO prestiti (libro_id, utente_id, data_prestito, data_scadenza, stato, origine, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, 'in_corso', 'diretto', NOW(), NOW())"
+            );
+            if ($ins === false) { $this->db->rollback(); return null; }
+            $ins->bind_param('iiss', $bookId, $userId, $today, $dueDate);
+            if (!$ins->execute()) { $ins->close(); $this->db->rollback(); return null; }
+            $loanId = $ins->insert_id;
+            $ins->close();
+
+            $upd = $this->db->prepare(
+                'UPDATE libri SET copie_disponibili = GREATEST(0, copie_disponibili - 1) WHERE id = ?'
+            );
+            if ($upd === false) { $this->db->rollback(); return null; }
             $upd->bind_param('i', $bookId);
             $upd->execute();
             $upd->close();
-        }
 
-        return $id > 0 ? $id : null;
+            $this->db->commit();
+            return $loanId > 0 ? $loanId : null;
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            SecureLogger::error('[NcipServer] createLoanAtomic failed: ' . $e->getMessage());
+            return null;
+        }
     }
 
     private function createLoanNcip(int $bookId, int $userId, string $dueDate, ?string $requestId): ?int

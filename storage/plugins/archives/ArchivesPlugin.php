@@ -322,6 +322,7 @@ class ArchivesPlugin
             return;
         }
 
+        $failures = [];
         foreach ($columns as $col => $definition) {
             if (isset($existing[$col])) {
                 continue;
@@ -331,15 +332,16 @@ class ArchivesPlugin
             $sql = 'ALTER TABLE archival_units ADD COLUMN ' . $col . ' ' . $definition;
             try {
                 if ($this->db->query($sql) === false) {
-                    SecureLogger::warning(
-                        '[Archives] migrate image columns: ALTER failed for ' . $col . ': ' . $this->db->error
-                    );
+                    $failures[] = $col . ': ' . $this->db->error;
                 }
             } catch (\Throwable $e) {
-                SecureLogger::error(
-                    '[Archives] migrate image columns: exception on ' . $col . ': ' . $e->getMessage()
-                );
+                $failures[] = $col . ': ' . $e->getMessage();
             }
+        }
+        if ($failures !== []) {
+            throw new \RuntimeException(
+                '[Archives] migrateImageColumns failed: ' . implode('; ', $failures)
+            );
         }
 
         // Ensure the UNIQUE KEY on ark_identifier exists (ddlArchivalUnits creates it
@@ -4417,7 +4419,7 @@ class ArchivesPlugin
             $coverPath = (string) $row['cover_image_path'];
             $imageUrl  = $base . '/' . ltrim($coverPath, '/');
             $fsPath    = __DIR__ . '/../../../public' . $coverPath;
-            $imgSize   = @getimagesize($fsPath);
+            $imgSize   = is_file($fsPath) ? @getimagesize($fsPath) : false;
             $imgWidth  = ($imgSize !== false && $imgSize[0] > 0) ? $imgSize[0] : 1500;
             $imgHeight = ($imgSize !== false && $imgSize[1] > 0) ? $imgSize[1] : 2000;
             $mime      = ($imgSize !== false) ? $imgSize['mime'] : 'image/jpeg';
@@ -5470,9 +5472,6 @@ class ArchivesPlugin
         $repoName  = trim((string) ($cfg['app']['name'] ?? '')) ?: 'Pinakes';
         $adminMail = trim((string) ($cfg['mail']['from_email'] ?? '')) ?: 'admin@localhost';
 
-        // repositoryIdentifier: domain without port (RFC 1034 compliance).
-        $host = parse_url($baseUrl, PHP_URL_HOST) ?: 'localhost';
-
         $xw->startElement('Identify');
         $xw->writeElement('repositoryName', $repoName . ' — Archival Repository');
         $xw->writeElement('baseURL', $baseUrl);
@@ -5486,6 +5485,7 @@ class ArchivesPlugin
         $xw->text('YYYY-MM-DDThh:mm:ssZ');
         $xw->endElement();
         // oai-identifier description (Implementation Guidelines §2.1)
+        // Namespace must match identifiers emitted by oaiListRecords/oaiGetRecord.
         $xw->startElement('description');
         $xw->startElementNs(null, 'oai-identifier',
             'http://www.openarchives.org/OAI/2.0/oai-identifier');
@@ -5493,9 +5493,9 @@ class ArchivesPlugin
             'http://www.openarchives.org/OAI/2.0/oai-identifier ' .
             'http://www.openarchives.org/OAI/2.0/oai-identifier.xsd');
         $xw->writeElement('scheme', 'oai');
-        $xw->writeElement('repositoryIdentifier', $host);
+        $xw->writeElement('repositoryIdentifier', 'pinakes');
         $xw->writeElement('delimiter', ':');
-        $xw->writeElement('sampleIdentifier', 'oai:' . $host . ':archival_unit:1');
+        $xw->writeElement('sampleIdentifier', 'oai:pinakes:archival_unit:1');
         $xw->endElement(); // oai-identifier
         $xw->endElement(); // description
         $xw->endElement(); // Identify
@@ -5599,14 +5599,16 @@ class ArchivesPlugin
         $bindVals  = [];
 
         if ($from !== '') {
-            $where[]     = 'updated_at >= ?';
-            $bindTypes  .= 's';
-            $bindVals[]  = str_replace('T', ' ', str_replace('Z', '', $from));
+            $fromSql    = strlen($from) === 10 ? $from . ' 00:00:00' : str_replace('T', ' ', str_replace('Z', '', $from));
+            $where[]    = 'updated_at >= ?';
+            $bindTypes .= 's';
+            $bindVals[] = $fromSql;
         }
         if ($until !== '') {
+            $untilSql   = strlen($until) === 10 ? $until . ' 23:59:59' : str_replace('T', ' ', str_replace('Z', '', $until));
             $where[]    = 'updated_at <= ?';
             $bindTypes .= 's';
-            $bindVals[] = str_replace('T', ' ', str_replace('Z', '', $until));
+            $bindVals[] = $untilSql;
         }
         $whereClause = implode(' AND ', $where);
         $limitSql    = 'LIMIT ' . $pageSize . ' OFFSET ' . $cursor;

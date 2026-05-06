@@ -34,7 +34,7 @@ const ADMIN_PASS  = process.env.E2E_ADMIN_PASS  || '';
 
 /** Interop plugins that implement deleteHooksFromDb — must have 0 hooks after deactivation */
 const INTEROP_PLUGIN_NAMES = [
-    'ncip-server', 'openurl-resolver', 'resource-sync',
+    'bibframe-linked-data', 'ncip-server', 'openurl-resolver', 'resource-sync',
     'oai-pmh-server', 'viaf-authority',
 ];
 

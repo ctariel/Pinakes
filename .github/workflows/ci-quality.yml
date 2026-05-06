@@ -18,6 +18,13 @@ on:
       - 'phpstan-baseline.neon'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   quality:
     name: PHP Lint · PHPStan · Composer Audit
@@ -46,11 +53,12 @@ jobs:
 
       - name: PHP syntax check
         run: |
+          set -o pipefail
           echo "Checking PHP syntax..."
-          ERRORS=$(find app/ config/ public/ installer/ server/ -name '*.php' \
+          ERRORS=$(find app/ config/ public/ installer/ server/ storage/plugins/ -name '*.php' \
             ! -path '*/vendor/*' \
             | xargs -P4 -n1 php -l 2>&1 \
-            | grep -E "Parse error|Fatal error" || true)
+            | grep -E "Parse error|Fatal error")
           if [ -n "$ERRORS" ]; then
             echo "$ERRORS"
             exit 1

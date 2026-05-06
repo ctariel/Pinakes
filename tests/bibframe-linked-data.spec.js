@@ -52,21 +52,24 @@ test.skip(
 test.describe.serial('BIBFRAME 2.0 Linked Data plugin — v0.7.1 (10 tests)', () => {
     /** @type {number} */
     let testBookId = 0;
+    const TAG = `E2E_BIBFRAME_${Date.now()}`;
 
     test.beforeAll(async () => {
-        // Create a minimal test book.
+        // Pre-cleanup: remove stale entries from prior failed runs.
+        try { dbExec("DELETE FROM libri WHERE titolo LIKE 'E2E_BIBFRAME_%'"); } catch { /* best-effort */ }
+        // Create a minimal test book with a unique title.
         dbExec(
-            "INSERT INTO libri (titolo, anno_pubblicazione, created_at, updated_at) " +
-            "VALUES ('E2E_BIBFRAME_Book', 2024, NOW(), NOW())"
+            `INSERT INTO libri (titolo, anno_pubblicazione, created_at, updated_at) ` +
+            `VALUES ('${TAG}', 2024, NOW(), NOW())`
         );
         testBookId = parseInt(
-            dbQuery("SELECT id FROM libri WHERE titolo='E2E_BIBFRAME_Book' AND deleted_at IS NULL LIMIT 1")
+            dbQuery(`SELECT id FROM libri WHERE titolo='${TAG}' AND deleted_at IS NULL LIMIT 1`)
         );
     });
 
     test.afterAll(async () => {
         try {
-            dbExec(`DELETE FROM libri WHERE titolo='E2E_BIBFRAME_Book'`);
+            dbExec(`DELETE FROM libri WHERE titolo='${TAG}'`);
         } catch { /* best-effort */ }
     });
 

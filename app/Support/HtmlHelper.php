@@ -282,7 +282,10 @@ class HtmlHelper
             }
         }
 
-        $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        $forwardedProto = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '';
+        $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || strtolower($forwardedProto) === 'https';
+        $protocol = $isHttps ? 'https' : 'http';
 
         // Ricostruisci l'URL con la porta se presente e non standard
         $baseUrl = $protocol . '://' . $host;

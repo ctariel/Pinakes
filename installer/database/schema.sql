@@ -55,7 +55,7 @@ CREATE TABLE `autori` (
   `sito_web` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `viaf_id` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `viaf_uri` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `isni_id` char(19) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `isni_id` varchar(16) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `isni_uri` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `authority_source` enum('manual','viaf','isni','sbn','wikidata') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `authority_confidence` enum('exact','probable','candidate','rejected') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
@@ -664,7 +664,7 @@ CREATE TABLE `plugins` (
 CREATE TABLE `oai_deleted_records` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `entity_type` enum('book','archive_unit') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `entity_id` int unsigned NOT NULL,
+  `entity_id` int NOT NULL,
   `oai_id` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
   `datestamp` datetime NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -735,7 +735,8 @@ CREATE TABLE `ncip_transactions` (
   PRIMARY KEY (`id`),
   KEY `idx_partner` (`partner_id`),
   KEY `idx_status` (`status`),
-  KEY `idx_prestito` (`prestito_id`)
+  KEY `idx_prestito` (`prestito_id`),
+  CONSTRAINT `ncip_transactions_ibfk_1` FOREIGN KEY (`partner_id`) REFERENCES `ncip_partners` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;

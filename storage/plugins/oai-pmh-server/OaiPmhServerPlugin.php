@@ -4,6 +4,15 @@ declare(strict_types=1);
 
 namespace App\Plugins\OaiPmhServer;
 
+/** Thrown when a record cannot be serialised in the requested metadata format. */
+class CannotDisseminateFormatException extends \RuntimeException
+{
+    public function __construct(string $prefix)
+    {
+        parent::__construct("Format not supported for this record type: {$prefix}");
+    }
+}
+
 use App\Support\HookManager;
 use App\Support\SecureLogger;
 use mysqli;
@@ -87,6 +96,8 @@ class OaiPmhServerPlugin
     {
         $this->deleteHooksFromDb();
     }
+
+    public function onUninstall(): void {}
 
     // ── Schema ────────────────────────────────────────────────────────────────
 
@@ -677,8 +688,13 @@ class OaiPmhServerPlugin
         }
 
         // Normalise date strings to MySQL DATETIME format.
-        $fromMysql  = $from  !== '' ? str_replace(['T', 'Z'], [' ', ''], $from)  : null;
-        $untilMysql = $until !== '' ? str_replace(['T', 'Z'], [' ', ''], $until) : null;
+        // For date-only values (YYYY-MM-DD) expand to inclusive day boundaries.
+        $fromMysql = $from !== ''
+            ? (strlen($from) === 10 ? $from . ' 00:00:00' : str_replace(['T', 'Z'], [' ', ''], $from))
+            : null;
+        $untilMysql = $until !== ''
+            ? (strlen($until) === 10 ? $until . ' 23:59:59' : str_replace(['T', 'Z'], [' ', ''], $until))
+            : null;
 
         // Build the combined result set: active records + persistent deletions.
         $records = $this->fetchRecordsPage($set, $fromMysql, $untilMysql, $cursor, self::PAGE_SIZE + 1);
@@ -722,9 +738,16 @@ class OaiPmhServerPlugin
             $xw->endElement(); // header
 
             if (!$identifiersOnly && !$isDeleted) {
-                $xw->startElement('metadata');
-                $this->writeMetadata($xw, $rec, $metadataPrefix);
-                $xw->endElement(); // metadata
+                try {
+                    $xw->startElement('metadata');
+                    $this->writeMetadata($xw, $rec, $metadataPrefix);
+                    $xw->endElement(); // metadata
+                } catch (CannotDisseminateFormatException $e) {
+                    // This record type doesn't support the requested format — skip it.
+                    // The XMLWriter may have an open 'metadata' element; close it safely.
+                    try { $xw->endElement(); } catch (\Throwable $ignored) {}
+                    continue;
+                }
             }
 
             if (!$identifiersOnly) {
@@ -801,9 +824,16 @@ class OaiPmhServerPlugin
         $xw->writeElement('setSpec', $setSpec);
         $xw->endElement(); // header
 
-        $xw->startElement('metadata');
-        $this->writeMetadata($xw, $rec, $metadataPrefix);
-        $xw->endElement(); // metadata
+        try {
+            $xw->startElement('metadata');
+            $this->writeMetadata($xw, $rec, $metadataPrefix);
+            $xw->endElement(); // metadata
+        } catch (CannotDisseminateFormatException $e) {
+            try { $xw->endElement(); } catch (\Throwable $ignored) {}
+            $this->oaiError($xw, 'cannotDisseminateFormat',
+                'The requested metadataPrefix is not supported for this record type.');
+            return;
+        }
 
         $xw->endElement(); // record
         $xw->endElement(); // GetRecord
@@ -1625,26 +1655,12 @@ class OaiPmhServerPlugin
             }
 
             $xw->endElement(); // oai_dc:dc
-        } else {
-            // For MARCXML/MODS/MAG, emit minimal stub for archival units.
-            $this->writeArchivalUnitDcFallback($xw, $rec, $metadataPrefix);
+            return;
         }
-    }
 
-    /**
-     * @param array<string, mixed> $rec
-     */
-    private function writeArchivalUnitDcFallback(\XMLWriter $xw, array $rec, string $format): void
-    {
-        // Fallback: always emit oai_dc-compatible output even for other format requests
-        // (the richer formats for archival units are in the archives plugin itself).
-        $xw->startElementNs('oai_dc', 'dc', 'http://www.openarchives.org/OAI/2.0/oai_dc/');
-        $xw->writeAttributeNs('xmlns', 'dc', null, 'http://purl.org/dc/elements/1.1/');
-        $xw->writeAttributeNs('xsi', 'schemaLocation', null,
-            'http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd');
-        $xw->writeElementNs('dc', 'title', null, (string) ($rec['constructed_title'] ?? ''));
-        $xw->writeElementNs('dc', 'type', null, 'Archival Unit');
-        $xw->endElement();
+        // Non-oai_dc formats are not supported for archival units in this OAI endpoint.
+        // The archives plugin's /archives/oai endpoint handles richer formats.
+        throw new CannotDisseminateFormatException($metadataPrefix);
     }
 
     // ── Identifier resolution ─────────────────────────────────────────────────

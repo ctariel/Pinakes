@@ -202,7 +202,10 @@ foreach ($authors as $authorData) {
     if (!empty($authorData['isni_uri']) && is_string($authorData['isni_uri'])) {
         $personSameAs[] = $authorData['isni_uri'];
     } elseif (!empty($authorData['isni_id']) && is_string($authorData['isni_id'])) {
-        $personSameAs[] = 'https://isni.org/isni/' . preg_replace('/\s+/', '', $authorData['isni_id']);
+        $isniNorm = preg_replace('/\s+/', '', $authorData['isni_id']);
+        if ($isniNorm !== null && preg_match('/^\d{15}[\dX]$/i', $isniNorm)) {
+            $personSameAs[] = 'https://isni.org/isni/' . $isniNorm;
+        }
     }
     if (!empty($personSameAs)) {
         $person['sameAs'] = count($personSameAs) === 1 ? $personSameAs[0] : $personSameAs;

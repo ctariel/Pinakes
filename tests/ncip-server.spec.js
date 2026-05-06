@@ -330,12 +330,15 @@ test.describe.serial('NCIP 2.0 Server plugin — v0.7.4 (20 tests)', () => {
 
     /** @type {number} */
     let ncipLoanBookId = 0;
+    /** @type {number} */
+    let copieBaseline = 0;
 
     test('18. POST RequestItem (staff auth) → RequestItemResponse', async ({ request }) => {
         test.skip(!ADMIN_EMAIL || !ADMIN_PASS, 'Missing admin credentials');
         test.skip(testBookId === 0 || testUserId === 0, 'Missing test data');
 
         ncipLoanBookId = testBookId;
+        copieBaseline = parseInt(dbQuery(`SELECT copie_disponibili FROM libri WHERE id = ${testBookId} LIMIT 1`)) || 0;
         const auth = basicAuth(ADMIN_EMAIL, ADMIN_PASS);
         const body = `<?xml version="1.0" encoding="UTF-8"?>
 <NCIPMessage xmlns="${NCIP_NS}">

@@ -291,8 +291,13 @@ test.describe.serial('W3C Reconciliation API — v0.7.4 (18 tests)', () => {
         });
         // Spec allows 400 for malformed input or 200 with error key
         const isError = res.status() === 400 || res.status() === 422;
-        const body    = await res.json();
-        const hasErrorKey = typeof body.error !== 'undefined';
+        let hasErrorKey = false;
+        if (res.headers()['content-type']?.includes('json')) {
+            try {
+                const body = await res.json();
+                hasErrorKey = typeof body.error !== 'undefined';
+            } catch { /* non-JSON response is fine for 4xx */ }
+        }
         expect(isError || hasErrorKey).toBe(true);
     });
 });
