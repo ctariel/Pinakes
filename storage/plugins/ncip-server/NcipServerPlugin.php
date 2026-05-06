@@ -81,10 +81,12 @@ class NcipServerPlugin
         $this->db->query(
             "CREATE TABLE IF NOT EXISTS ncip_partners (
                 id           INT AUTO_INCREMENT PRIMARY KEY,
-                code         VARCHAR(64)   NOT NULL,
+                code         VARCHAR(64)   NULL DEFAULT NULL,
                 name         VARCHAR(255)  NOT NULL,
                 agency_id    VARCHAR(255)  NULL,
                 endpoint_url VARCHAR(500)  NULL,
+                isil         VARCHAR(64)   NULL,
+                notes        TEXT          NULL,
                 active       TINYINT(1)    NOT NULL DEFAULT 1,
                 created_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -18,7 +18,24 @@ CREATE TABLE IF NOT EXISTS digital_assets (
     INDEX idx_libro_id (libro_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Add ISIL and notes to ncip_partners; relax legacy NOT NULL constraint on code
+-- ncip_partners: create if it does not exist yet (fresh-install path);
+-- upgrade path: the ALTER TABLE statements below add columns that may be missing.
+CREATE TABLE IF NOT EXISTS ncip_partners (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    code         VARCHAR(64)   NULL DEFAULT NULL,
+    name         VARCHAR(255)  NOT NULL,
+    agency_id    VARCHAR(255)  NULL,
+    endpoint_url VARCHAR(500)  NULL,
+    isil         VARCHAR(64)   NULL,
+    notes        TEXT          NULL,
+    active       TINYINT(1)    NOT NULL DEFAULT 1,
+    created_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_code (code),
+    KEY idx_active (active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Upgrade path: add columns if missing (idempotent — duplicate column errors are tolerated by CI)
 ALTER TABLE ncip_partners ADD COLUMN isil  VARCHAR(64) NULL AFTER endpoint_url;
 ALTER TABLE ncip_partners ADD COLUMN notes TEXT        NULL AFTER isil;
 ALTER TABLE ncip_partners MODIFY COLUMN code VARCHAR(64) NULL DEFAULT NULL;
