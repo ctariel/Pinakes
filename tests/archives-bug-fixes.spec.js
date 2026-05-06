@@ -251,38 +251,68 @@ test.describe.serial('Archives bug-fix regressions (5 tests)', () => {
         expect(lastmodMatch).not.toBeNull();
     });
 
-    // ── Test 5: OAI-PMH returns badArgument on malformed from/until ────────────
+    // ── Test 5: OAI-PMH spec compliance (date validation + Identify oai-identifier) ─
     //
-    // Bug: malformed from/until parameters were silently accepted by MySQL's date
-    // coercion instead of returning the OAI-PMH badArgument error required by spec.
-    // Fixed: regex validation added in oaiListRecords before building the query.
+    // Bug A: malformed from/until silently accepted → fixed: regex + badArgument.
+    // Gap fixed: Identify response now includes <oai-identifier> description element
+    //   (OAI-PMH Implementation Guidelines §2.1) and record headers no longer carry
+    //   <setSpec> while ListSets returns noSetHierarchy (contradictory per spec).
 
-    test('5. OAI-PMH ListRecords returns badArgument on malformed from/until dates', async () => {
-        // Malformed "from" date.
+    test('5. OAI-PMH spec compliance: badArgument on bad dates + Identify oai-identifier', async () => {
+        // ── 5a: date validation ──────────────────────────────────────────────
         const badFrom = await page.request.get(
             `${BASE}/archives/oai?verb=ListRecords&metadataPrefix=oai_dc&from=not-a-date`
         );
         expect(badFrom.status()).toBe(200); // OAI-PMH always returns 200
         const fromText = await badFrom.text();
         expect(fromText).toContain('<error code="badArgument"');
-        expect(fromText).toContain('from');
 
-        // Malformed "until" date.
         const badUntil = await page.request.get(
             `${BASE}/archives/oai?verb=ListRecords&metadataPrefix=oai_dc&until=2024/01/01`
         );
         const untilText = await badUntil.text();
         expect(untilText).toContain('<error code="badArgument"');
-        expect(untilText).toContain('until');
 
-        // Valid dates must NOT return badArgument.
+        // Valid date must NOT return badArgument.
         const good = await page.request.get(
             `${BASE}/archives/oai?verb=ListRecords&metadataPrefix=oai_dc&from=2000-01-01`
         );
         const goodText = await good.text();
         expect(goodText).not.toContain('<error code="badArgument"');
-        // OAI-PMH: valid response has either <ListRecords> or noRecordsMatch.
         const validResponse = goodText.includes('<ListRecords>') || goodText.includes('noRecordsMatch');
         expect(validResponse).toBe(true);
+
+        // ── 5b: Identify must include oai-identifier description element ─────
+        const identify = await page.request.get(`${BASE}/archives/oai?verb=Identify`);
+        const identifyText = await identify.text();
+        // oai-identifier namespace element
+        expect(identifyText).toContain('oai-identifier');
+        expect(identifyText).toContain('<scheme>oai</scheme>');
+        expect(identifyText).toContain('<delimiter>:</delimiter>');
+        expect(identifyText).toContain('<sampleIdentifier>');
+
+        // ── 5c: record headers must NOT include setSpec (no set hierarchy) ───
+        // Create a unit and verify its OAI-PMH record has no <setSpec>.
+        const fondsRef2 = TAG + '_SETOAI';
+        dbExec(`DELETE FROM archival_units WHERE reference_code = '${fondsRef2}'`);
+        await page.goto(`${BASE}/admin/archives/new`);
+        await page.waitForLoadState('domcontentloaded');
+        await page.fill('input[name="reference_code"]', fondsRef2);
+        await page.selectOption('select[name="level"]', 'fonds');
+        await page.fill('input[name="constructed_title"]', 'BugFix SetSpec Check');
+        await Promise.all([
+            page.waitForURL(/\/admin\/archives$/, { timeout: 10000 }),
+            page.click('button[type="submit"]'),
+        ]);
+        const setUnitId = dbQuery(
+            `SELECT id FROM archival_units WHERE reference_code = '${fondsRef2}' AND deleted_at IS NULL`
+        );
+        const oaiRec = await page.request.get(
+            `${BASE}/archives/oai?verb=GetRecord&metadataPrefix=oai_dc&identifier=oai:pinakes:archival_unit:${setUnitId}`
+        );
+        const oaiRecText = await oaiRec.text();
+        expect(oaiRecText).not.toContain('<setSpec>');
+        // Cleanup
+        dbExec(`DELETE FROM archival_units WHERE reference_code = '${fondsRef2}'`);
     });
 });

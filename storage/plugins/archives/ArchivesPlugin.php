@@ -5460,6 +5460,9 @@ class ArchivesPlugin
         $repoName  = trim((string) ($cfg['app']['name'] ?? '')) ?: 'Pinakes';
         $adminMail = trim((string) ($cfg['mail']['from_email'] ?? '')) ?: 'admin@localhost';
 
+        // repositoryIdentifier: domain without port (RFC 1034 compliance).
+        $host = parse_url($baseUrl, PHP_URL_HOST) ?: 'localhost';
+
         $xw->startElement('Identify');
         $xw->writeElement('repositoryName', $repoName . ' — Archival Repository');
         $xw->writeElement('baseURL', $baseUrl);
@@ -5472,6 +5475,19 @@ class ArchivesPlugin
         $xw->startElement('granularity');
         $xw->text('YYYY-MM-DDThh:mm:ssZ');
         $xw->endElement();
+        // oai-identifier description (Implementation Guidelines §2.1)
+        $xw->startElement('description');
+        $xw->startElementNs(null, 'oai-identifier',
+            'http://www.openarchives.org/OAI/2.0/oai-identifier');
+        $xw->writeAttributeNs('xsi', 'schemaLocation', null,
+            'http://www.openarchives.org/OAI/2.0/oai-identifier ' .
+            'http://www.openarchives.org/OAI/2.0/oai-identifier.xsd');
+        $xw->writeElement('scheme', 'oai');
+        $xw->writeElement('repositoryIdentifier', $host);
+        $xw->writeElement('delimiter', ':');
+        $xw->writeElement('sampleIdentifier', 'oai:' . $host . ':archival_unit:1');
+        $xw->endElement(); // oai-identifier
+        $xw->endElement(); // description
         $xw->endElement(); // Identify
     }
 
@@ -5652,9 +5668,8 @@ class ArchivesPlugin
             $xw->startElement('header');
             $xw->writeElement('identifier', $oaiId);
             $xw->writeElement('datestamp',  $dtStamp);
-            if (!empty($row['level'])) {
-                $xw->writeElement('setSpec', (string) $row['level']);
-            }
+            // setSpec omitted: this repository returns noSetHierarchy from ListSets,
+            // so advertising set membership in record headers would be contradictory.
             $xw->endElement(); // header
 
             if (!$identifiersOnly) {
@@ -5783,9 +5798,6 @@ class ArchivesPlugin
         $xw->startElement('header');
         $xw->writeElement('identifier', $identifier);
         $xw->writeElement('datestamp',  $dtStamp);
-        if (!empty($row['level'])) {
-            $xw->writeElement('setSpec', (string) $row['level']);
-        }
         $xw->endElement(); // header
 
         $xw->startElement('metadata');
