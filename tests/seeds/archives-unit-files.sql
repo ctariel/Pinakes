@@ -57,9 +57,8 @@ SELECT
     1945, 1945,
     'Singolo documento di prova allegato all''unità A.',
     'ita', 'text', 'E2EFILE-A', NOW()
-FROM DUAL
-WHERE EXISTS (SELECT 1 FROM archival_units
-              WHERE reference_code = 'E2E_FILE_FONDS_001');
+FROM DUAL WHERE EXISTS (SELECT 1 FROM archival_units
+                         WHERE reference_code = 'E2E_FILE_FONDS_001');
 
 -- ── 4. Item B (figlio del fondo) ────────────────────────────────────────────
 INSERT IGNORE INTO archival_units
@@ -74,9 +73,8 @@ SELECT
     1960, 1975,
     'Unità senza documenti allegati (verifica assenza lista).',
     'ita', 'text', 'E2EFILE-B', NOW()
-FROM DUAL
-WHERE EXISTS (SELECT 1 FROM archival_units
-              WHERE reference_code = 'E2E_FILE_FONDS_001');
+FROM DUAL WHERE EXISTS (SELECT 1 FROM archival_units
+                         WHERE reference_code = 'E2E_FILE_FONDS_001');
 
 -- ── 5. archival_unit_files rows for the fondo (3 files) ─────────────────────
 -- These paths are fictional; they do not need to exist on disk for

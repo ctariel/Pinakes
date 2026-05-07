@@ -4643,5 +4643,11 @@
   "Nessuna transazione registrata.": "Keine Transaktionen aufgezeichnet.",
   "Pagina %d di %d": "Seite %d von %d",
   "Eliminare questo partner?": "Diesen Partner löschen?",
-  "Es. Biblioteca Nazionale di Roma": "z.B. Nationalbibliothek Rom"
+  "Es. Biblioteca Nazionale di Roma": "z.B. Nationalbibliothek Rom",
+  "Accesso negato.": "Zugriff verweigert.",
+  "ISNI non valido (check digit errato o formato errato).": "Ungültige ISNI (falsches Prüfzeichen oder Format).",
+  "Dati VIAF/ISNI salvati.": "VIAF/ISNI-Daten gespeichert.",
+  "Dati VIAF/ISNI rimossi.": "VIAF/ISNI-Daten entfernt.",
+  "ISNI salvato.": "ISNI gespeichert.",
+  "ISNI rimosso.": "ISNI entfernt."
 }

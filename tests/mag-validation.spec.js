@@ -36,10 +36,17 @@ const DB_USER   = process.env.E2E_DB_USER   || '';
 const DB_PASS   = process.env.E2E_DB_PASS   || '';
 const DB_NAME   = process.env.E2E_DB_NAME   || '';
 const DB_SOCKET = process.env.E2E_DB_SOCKET || '';
+const DB_HOST   = process.env.E2E_DB_HOST   || '';
+const DB_PORT   = process.env.E2E_DB_PORT   || '';
 
 function mysqlArgs(sql, batch = false) {
     const args = [];
-    if (DB_SOCKET) args.push('-S', DB_SOCKET);
+    if (DB_SOCKET) {
+        args.push('-S', DB_SOCKET);
+    } else {
+        if (DB_HOST) args.push('-h', DB_HOST);
+        if (DB_PORT) args.push('-P', DB_PORT);
+    }
     args.push('-u', DB_USER, DB_NAME);
     if (batch) args.push('-N', '-B');
     if (sql !== '') args.push('-e', sql);
@@ -233,8 +240,9 @@ test.describe.serial('MAG 2.0.1 metadata validation — v0.7.4 (18 tests)', () =
         const match = body.match(/<dc:title>([^<]*)<\/dc:title>/);
         if (match) {
             const xmlTitle = match[1]
-                .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-                .replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
+                .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+                .replace(/&amp;/g, '&').trim();
             expect(xmlTitle).toBe(testBookTitle);
         }
     });

@@ -483,5 +483,11 @@
   "Pagina %d di %d": "Pagina %d di %d",
   "Eliminare questo partner?": "Eliminare questo partner?",
   "Es. Biblioteca Nazionale di Roma": "Es. Biblioteca Nazionale di Roma",
-  "🔒 Sicurezza Importante": "🔒 Sicurezza Importante"
+  "🔒 Sicurezza Importante": "🔒 Sicurezza Importante",
+  "Accesso negato.": "Accesso negato.",
+  "ISNI non valido (check digit errato o formato errato).": "ISNI non valido (check digit errato o formato errato).",
+  "Dati VIAF/ISNI salvati.": "Dati VIAF/ISNI salvati.",
+  "Dati VIAF/ISNI rimossi.": "Dati VIAF/ISNI rimossi.",
+  "ISNI salvato.": "ISNI salvato.",
+  "ISNI rimosso.": "ISNI rimosso."
 }

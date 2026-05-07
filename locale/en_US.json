@@ -4643,5 +4643,11 @@
   "Nessuna transazione registrata.": "No transactions recorded.",
   "Pagina %d di %d": "Page %d of %d",
   "Eliminare questo partner?": "Delete this partner?",
-  "Es. Biblioteca Nazionale di Roma": "E.g. National Library of Rome"
+  "Es. Biblioteca Nazionale di Roma": "E.g. National Library of Rome",
+  "Accesso negato.": "Access denied.",
+  "ISNI non valido (check digit errato o formato errato).": "Invalid ISNI (wrong check digit or format).",
+  "Dati VIAF/ISNI salvati.": "VIAF/ISNI data saved.",
+  "Dati VIAF/ISNI rimossi.": "VIAF/ISNI data removed.",
+  "ISNI salvato.": "ISNI saved.",
+  "ISNI rimosso.": "ISNI removed."
 }

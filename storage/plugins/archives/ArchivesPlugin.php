@@ -363,16 +363,17 @@ class ArchivesPlugin
                         'ALTER TABLE archival_units ADD UNIQUE KEY uq_ark_identifier (ark_identifier)'
                     );
                     if ($result === false) {
-                        SecureLogger::error(
-                            '[Archives] migrateImageColumns: failed to add uq_ark_identifier: ' . $this->db->error
-                        );
+                        $failures[] = 'uq_ark_identifier: ' . $this->db->error;
                     }
                 } catch (\Throwable $e) {
-                    SecureLogger::error(
-                        '[Archives] migrateImageColumns: failed to add uq_ark_identifier: ' . $e->getMessage()
-                    );
+                    $failures[] = 'uq_ark_identifier: ' . $e->getMessage();
                 }
             }
+        }
+        if ($failures !== []) {
+            throw new \RuntimeException(
+                '[Archives] migrateImageColumns failed: ' . implode('; ', $failures)
+            );
         }
     }
 
@@ -926,9 +927,11 @@ class ArchivesPlugin
         ServerRequestInterface $request,
         ResponseInterface $response
     ): ResponseInterface {
-        $params = $request->getQueryParams();
-        $q      = trim((string) ($params['q'] ?? ''));
-        $level  = isset(self::LEVELS[$params['level'] ?? '']) ? $params['level'] : '';
+        $params   = $request->getQueryParams();
+        $rawQuery = $params['q'] ?? '';
+        $rawLevel = $params['level'] ?? '';
+        $q        = is_string($rawQuery) ? trim($rawQuery) : '';
+        $level    = is_string($rawLevel) && isset(self::LEVELS[$rawLevel]) ? $rawLevel : '';
 
         $rows = [];
         if ($q !== '' || $level !== '') {
@@ -2366,8 +2369,10 @@ class ArchivesPlugin
         ResponseInterface $response
     ): ResponseInterface {
         $params    = $request->getQueryParams();
-        $q         = trim((string) ($params['q'] ?? ''));
-        $level     = isset(self::LEVELS[$params['level'] ?? '']) ? $params['level'] : '';
+        $rawQ      = $params['q'] ?? '';
+        $rawLevel  = $params['level'] ?? '';
+        $q         = is_string($rawQ) ? trim($rawQ) : '';
+        $level     = is_string($rawLevel) && isset(self::LEVELS[$rawLevel]) ? $rawLevel : '';
         $dateFrom  = (string) ($params['date_from'] ?? '');
         $dateTo    = (string) ($params['date_to'] ?? '');
 
@@ -4427,7 +4432,7 @@ class ArchivesPlugin
         } elseif ($ark !== '' && preg_match('#^ark:/#i', $ark) !== 1) {
             $errors['ark_identifier'] = "Inserire un identificatore ARK valido nel formato ark:/... (es. ark:/12345/abc123).";
         } elseif ($ark !== '') {
-            $sql = 'SELECT id FROM archival_units WHERE ark_identifier = ? AND deleted_at IS NULL';
+            $sql = 'SELECT id FROM archival_units WHERE ark_identifier = ?';
             if ($excludeId !== null) {
                 $sql .= ' AND id != ?';
             }
@@ -6010,13 +6015,22 @@ class ArchivesPlugin
             return;
         }
 
-        $dateRegex = '/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}Z)?$/';
-        if ($from !== '' && !preg_match($dateRegex, $from)) {
-            $this->oaiError($xw, 'badArgument', 'Invalid from date format. Use YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.');
+        $validateOaiDate = static function (string $date): bool {
+            $fmt = strlen($date) === 10 ? 'Y-m-d' : 'Y-m-d\TH:i:s\Z';
+            $d   = \DateTime::createFromFormat($fmt, $date);
+            if ($d === false) {
+                return false;
+            }
+            $errs = \DateTime::getLastErrors();
+            return $errs === false
+                || ($errs['error_count'] === 0 && $errs['warning_count'] === 0);
+        };
+        if ($from !== '' && !$validateOaiDate($from)) {
+            $this->oaiError($xw, 'badArgument', 'Invalid from date. Use YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.');
             return;
         }
-        if ($until !== '' && !preg_match($dateRegex, $until)) {
-            $this->oaiError($xw, 'badArgument', 'Invalid until date format. Use YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.');
+        if ($until !== '' && !$validateOaiDate($until)) {
+            $this->oaiError($xw, 'badArgument', 'Invalid until date. Use YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.');
             return;
         }
 

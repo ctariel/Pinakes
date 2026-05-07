@@ -85,12 +85,6 @@ function makeMinimalPdf(label = 'test') {
     );
 }
 
-/** Create a minimal PNG image in memory (8×8 magenta). */
-function makeMinimalPng() {
-    // A known-good minimal 1×1 red PNG in base64
-    const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==';
-    return Buffer.from(b64, 'base64');
-}
 
 test.skip(
     !ADMIN_EMAIL || !ADMIN_PASS || !DB_USER || !DB_NAME,

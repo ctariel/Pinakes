@@ -1379,7 +1379,7 @@ HTACCESS;
         };
 
         // Generic plugin installer
-        $installPlugin = function(string $pluginName, array $additionalHooks = []) use ($pdo, $ensureHooks, &$results) {
+        $installPlugin = function(string $pluginName, array $additionalHooks = [], bool $activate = true) use ($pdo, $ensureHooks, &$results) {
             try {
                 $pluginDir = $this->baseDir . '/storage/plugins/' . $pluginName;
 
@@ -1405,11 +1405,12 @@ HTACCESS;
                 $pluginId = (int)$stmt->fetchColumn();
 
                 if (!$pluginId) {
+                    $isActiveBit = $activate ? 1 : 0;
                     $insertStmt = $pdo->prepare("
                         INSERT INTO plugins (name, display_name, description, version, author, author_url, plugin_url,
                             is_active, path, main_file, requires_php, requires_app, metadata, installed_at)
                         VALUES (:name, :display_name, :description, :version, :author, :author_url, :plugin_url,
-                            1, :path, :main_file, :requires_php, :requires_app, :metadata, NOW())
+                            {$isActiveBit}, :path, :main_file, :requires_php, :requires_app, :metadata, NOW())
                     ");
 
                     $insertStmt->execute([
@@ -1462,6 +1463,14 @@ HTACCESS;
         $installPlugin('dewey-editor', [
             ['name' => 'app.routes.register', 'callback_method' => 'registerRoutes', 'priority' => 10]
         ]);
+
+        // Register interoperability plugins as inactive (optional — user activates them)
+        $installPlugin('oai-pmh-server', [], false);
+        $installPlugin('viaf-authority', [], false);
+        $installPlugin('ncip-server', [], false);
+        $installPlugin('bibframe-linked-data', [], false);
+        $installPlugin('resource-sync', [], false);
+        $installPlugin('openurl-resolver', [], false);
 
         // Configure Z39 Server with SBN (Servizio Bibliotecario Nazionale) as default
         $this->configureZ39DefaultSettings($pdo);

@@ -159,7 +159,18 @@ PREPARE _stmt FROM @sql;
 EXECUTE _stmt;
 DEALLOCATE PREPARE _stmt;
 
-ALTER TABLE ncip_partners MODIFY COLUMN code VARCHAR(64) NULL DEFAULT NULL;
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'ncip_partners'
+      AND COLUMN_NAME  = 'code'
+);
+SET @sql = IF(
+    @col_exists > 0,
+    'ALTER TABLE ncip_partners MODIFY COLUMN code VARCHAR(64) NULL DEFAULT NULL',
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 
 -- ncip_transactions: upgrade path — add columns introduced in v0.7.4.
 -- The old schema (from ≤v0.7.3) had only: id, message_type, related_loan_id, request_id, created_at.
@@ -270,8 +281,31 @@ PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 -- migrate_0.7.3.sql is skipped when upgrading FROM exactly v0.7.3 (updater lower-bound
 -- check). The prestiti schema changes and plugin registration below are idempotent.
 
-ALTER TABLE autori MODIFY COLUMN viaf_uri VARCHAR(500) DEFAULT NULL;
-ALTER TABLE autori MODIFY COLUMN isni_uri VARCHAR(500) DEFAULT NULL;
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'autori'
+      AND COLUMN_NAME  = 'viaf_uri'
+);
+SET @sql = IF(
+    @col_exists > 0,
+    'ALTER TABLE autori MODIFY COLUMN viaf_uri VARCHAR(500) DEFAULT NULL',
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'autori'
+      AND COLUMN_NAME  = 'isni_uri'
+);
+SET @sql = IF(
+    @col_exists > 0,
+    'ALTER TABLE autori MODIFY COLUMN isni_uri VARCHAR(500) DEFAULT NULL',
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 
 SET @col_exists = (
     SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
@@ -299,6 +333,12 @@ SET @sql = IF(
 );
 PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'prestiti'
+      AND COLUMN_NAME  = 'origine'
+);
 SET @origin_has_ncip = (
     SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE()
@@ -307,7 +347,7 @@ SET @origin_has_ncip = (
       AND COLUMN_TYPE LIKE '%ncip%'
 );
 SET @sql = IF(
-    @origin_has_ncip = 0,
+    @col_exists > 0 AND @origin_has_ncip = 0,
     "ALTER TABLE prestiti MODIFY COLUMN origine ENUM('richiesta','prenotazione','diretto','ncip') COLLATE utf8mb4_unicode_ci DEFAULT 'richiesta'",
     'SELECT 1'
 );

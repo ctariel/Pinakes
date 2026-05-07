@@ -113,7 +113,9 @@ test.describe.serial('VIAF Authority + ISNI plugin — v1.1.0 (16 tests)', () =>
         if (testAuthorId > 0) {
             try {
                 // Restore original values (symmetric restore — not just NULLing).
-                const toSql = (v) => (v === 'NULL' || v === '' || v === '\\N') ? 'NULL' : `'${v.replace(/'/g, "\\'")}'`;
+                const toSql = (v) => (v === 'NULL' || v === '' || v === '\\N')
+                    ? 'NULL'
+                    : `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
                 dbQuery(
                     `UPDATE autori SET
                        viaf_id              = ${toSql(originalAuthorFields.viaf_id ?? 'NULL')},
@@ -294,7 +296,8 @@ test.describe.serial('VIAF Authority + ISNI plugin — v1.1.0 (16 tests)', () =>
     test('14. authority_source and confidence set correctly after viaf set', async ({ request }) => {
         test.skip(!ADMIN_EMAIL || !ADMIN_PASS, 'Missing admin credentials');
         test.skip(testAuthorId === 0, 'No author in DB');
-        await adminPost(request, `/api/viaf/author/${testAuthorId}/set`, 'viaf_id=79045105');
+        const setupRes = await adminPost(request, `/api/viaf/author/${testAuthorId}/set`, 'viaf_id=79045105');
+        expect(setupRes.status()).toBe(200);
         const res = await request.get(`${BASE}/api/viaf/author/${testAuthorId}`, {
             headers: { 'Authorization': basicAuth(ADMIN_EMAIL, ADMIN_PASS) },
         });

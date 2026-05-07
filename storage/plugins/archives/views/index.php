@@ -246,7 +246,9 @@ $rootRows = $byParent[0] ?? [];
                 <tbody class="bg-white divide-y divide-gray-200">
                     <?php if ($isFiltered): ?>
                         <?php foreach ($rows as $row): ?>
-                            <?= $renderRow($row, 0) ?>
+                            <?php if (!isset($renderedIds[(int) $row['id']])): ?>
+                                <?= $renderRow($row, 0) ?>
+                            <?php endif; ?>
                         <?php endforeach; ?>
                     <?php else: ?>
                         <?php
