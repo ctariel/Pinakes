@@ -11,19 +11,19 @@
  *  3. OAI ListRecords?metadataPrefix=mag → 200 no error
  *  4. MAG record has version="2.0.1" attribute
  *  5. MAG record contains <gen> section
- *  6. MAG <gen> contains <stprovenance> element
- *  7. MAG <gen> contains <generation> element
- *  8. MAG <gen> contains <access_rights> element
+ *  6. MAG <gen> contains <stprog> element
+ *  7. MAG <gen> contains <collection> element
+ *  8. MAG <gen> contains <rights> element
  *  9. MAG record contains <bib> section
- * 10. MAG <bib> contains <title> element
- * 11. MAG <bib> contains <author> or no authors (graceful)
+ * 10. MAG <bib> contains dc:title element
+ * 11. MAG <bib> contains dc:creator when authors exist
  * 12. MAG <bib> contains <paese>IT</paese>
  * 13. OAI GetRecord with metadataPrefix=mag → 200 for specific book
  * 14. GetRecord MAG response has correct OAI-PMH envelope
  * 15. GetRecord MAG <bib> title matches DB title
  * 16. Book with file_url set → MAG <doc> section present
  * 17. Book without file_url → no <doc> section
- * 18. MAG records use proper XML namespace (itc.it/mag)
+ * 18. MAG records use proper XML namespace (iccu.sbn.it/mag)
  *
  * Run: /tmp/run-e2e.sh tests/mag-validation.spec.js --config=tests/playwright.config.js --workers=1
  */
@@ -116,7 +116,7 @@ test.describe.serial('MAG 2.0.1 metadata validation — v0.7.4 (18 tests)', () =
         expect(res.status()).toBe(200);
         const body = await res.text();
         expect(body).not.toContain('<error code=');
-        expect(body).toContain('<mag');
+        expect(body).toContain('<metadigit');
     });
 
     test('4. MAG record has version="2.0.1" attribute', async ({ request }) => {
@@ -168,14 +168,14 @@ test.describe.serial('MAG 2.0.1 metadata validation — v0.7.4 (18 tests)', () =
         expect(body).toContain('</bib>');
     });
 
-    test('10. MAG <bib> contains <title>', async ({ request }) => {
+    test('10. MAG <bib> contains dc:title', async ({ request }) => {
         test.skip(testBookId === 0, 'No book in DB');
         const res = await request.get(`${BASE}/oai?verb=ListRecords&metadataPrefix=mag&set=books`);
         const body = await res.text();
-        expect(body).toContain('<title>');
+        expect(body).toContain('<dc:title>');
     });
 
-    test('11. MAG <bib> contains <author> element if authors exist', async ({ request }) => {
+    test('11. MAG <bib> contains dc:creator element if authors exist', async ({ request }) => {
         test.skip(testBookId === 0, 'No book in DB');
         const authorCount = dbQuery(
             `SELECT COUNT(*) FROM libri_autori WHERE libro_id = ${testBookId}`
@@ -183,9 +183,9 @@ test.describe.serial('MAG 2.0.1 metadata validation — v0.7.4 (18 tests)', () =
         const res = await request.get(`${BASE}/oai?verb=GetRecord&metadataPrefix=mag&identifier=oai:pinakes:book:${testBookId}`);
         const body = await res.text();
         if (parseInt(authorCount) > 0) {
-            expect(body).toContain('<author>');
+            expect(body).toContain('<dc:creator>');
         }
-        // If no authors, no <author> element — that's also valid
+        // If no authors, no dc:creator element — that's also valid.
     });
 
     test('12. MAG <bib> contains <paese>IT</paese>', async ({ request }) => {
@@ -205,7 +205,7 @@ test.describe.serial('MAG 2.0.1 metadata validation — v0.7.4 (18 tests)', () =
         expect(res.status()).toBe(200);
         const body = await res.text();
         expect(body).not.toContain('<error code=');
-        expect(body).toContain('<mag');
+        expect(body).toContain('<metadigit');
     });
 
     test('14. GetRecord MAG response has proper OAI-PMH envelope', async ({ request }) => {
@@ -227,7 +227,7 @@ test.describe.serial('MAG 2.0.1 metadata validation — v0.7.4 (18 tests)', () =
         );
         const body = await res.text();
         // Title may be HTML-encoded in XML
-        expect(body).toContain('<title>');
+        expect(body).toContain('<dc:title>');
     });
 
     // ── Tests 16-17: <doc> section (file presence) ───────────────────────────

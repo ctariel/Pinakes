@@ -24,7 +24,6 @@ class ResourceSyncPlugin
 {
     private const RS_NS    = 'http://www.openarchives.org/rs/terms/';
     private const SM_NS    = 'http://www.sitemaps.org/schemas/sitemap/0.9';
-    private const XMLNS    = 'http://www.w3.org/2000/xmlns/';
     private const PAGE_SIZE = 500;
 
     /** @phpstan-ignore-next-line property.onlyWritten */
@@ -195,7 +194,7 @@ class ResourceSyncPlugin
         $xw->startDocument('1.0', 'UTF-8');
 
         $xw->startElementNs(null, 'urlset', self::SM_NS);
-        $xw->writeAttributeNs('xmlns', 'rs', self::XMLNS, self::RS_NS);
+        $xw->writeAttribute('xmlns:rs', self::RS_NS);
 
         // rs:md — marks this as a Source Description
         $xw->startElementNs('rs', 'md', null);
@@ -226,7 +225,7 @@ class ResourceSyncPlugin
         $xw->startDocument('1.0', 'UTF-8');
 
         $xw->startElementNs(null, 'urlset', self::SM_NS);
-        $xw->writeAttributeNs('xmlns', 'rs', self::XMLNS, self::RS_NS);
+        $xw->writeAttribute('xmlns:rs', self::RS_NS);
 
         // rs:md — this document is the capability list; link back to source description
         $xw->startElementNs('rs', 'md', null);
@@ -274,7 +273,7 @@ class ResourceSyncPlugin
         $xw->startDocument('1.0', 'UTF-8');
 
         $xw->startElementNs(null, 'urlset', self::SM_NS);
-        $xw->writeAttributeNs('xmlns', 'rs', self::XMLNS, self::RS_NS);
+        $xw->writeAttribute('xmlns:rs', self::RS_NS);
 
         $xw->startElementNs('rs', 'md', null);
         $xw->writeAttribute('capability', 'resourcelist');
@@ -331,7 +330,7 @@ class ResourceSyncPlugin
         $xw->startDocument('1.0', 'UTF-8');
 
         $xw->startElementNs(null, 'urlset', self::SM_NS);
-        $xw->writeAttributeNs('xmlns', 'rs', self::XMLNS, self::RS_NS);
+        $xw->writeAttribute('xmlns:rs', self::RS_NS);
 
         $xw->startElementNs('rs', 'md', null);
         $xw->writeAttribute('capability', 'changelist');

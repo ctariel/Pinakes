@@ -170,6 +170,8 @@ class OaiPmhServerPlugin
             }
         }
 
+        $this->ensureMagProjectConfigSchema();
+
         // Migrate oai_resumption_tokens if it still has the old column-per-field schema
         // (pre-payload refactor). Tokens are ephemeral — DROP + recreate is safe.
         $colRes = $this->db->query(
@@ -193,6 +195,63 @@ class OaiPmhServerPlugin
         $this->installTriggers();
 
         return ['created' => $created, 'failed' => $failed];
+    }
+
+    private function ensureMagProjectConfigSchema(): void
+    {
+        $columns = $this->getExistingColumns('mag_project_config');
+        $addColumn = function (string $name, string $ddl) use ($columns): void {
+            if (!isset($columns[$name])) {
+                $this->db->query("ALTER TABLE mag_project_config ADD COLUMN {$ddl}");
+            }
+        };
+
+        $addColumn('institution_code', "institution_code VARCHAR(16) NOT NULL DEFAULT 'IT' AFTER project_code");
+        $addColumn('collection_name', "collection_name VARCHAR(255) NOT NULL DEFAULT 'Biblioteca Pinakes' AFTER institution_code");
+        $addColumn('rights_statement', "rights_statement VARCHAR(500) NOT NULL DEFAULT 'In Copyright' AFTER collection_name");
+        $addColumn('base_url', "base_url VARCHAR(500) NOT NULL DEFAULT '' AFTER rights_statement");
+
+        if (isset($columns['collection'])) {
+            $this->db->query(
+                "UPDATE mag_project_config
+                    SET collection_name = collection
+                  WHERE collection_name IN ('', 'Biblioteca Pinakes')
+                    AND collection <> ''"
+            );
+        }
+
+        $idx = $this->db->query(
+            "SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'mag_project_config'
+                AND INDEX_NAME = 'uq_project_code'"
+        );
+        $hasIndex = false;
+        if ($idx instanceof \mysqli_result) {
+            $row = $idx->fetch_assoc();
+            $idx->free();
+            $hasIndex = ((int) ($row['c'] ?? 0)) > 0;
+        }
+        if (!$hasIndex) {
+            $this->db->query('ALTER TABLE mag_project_config ADD UNIQUE KEY uq_project_code (project_code)');
+        }
+    }
+
+    /** @return array<string, true> */
+    private function getExistingColumns(string $table): array
+    {
+        $res = $this->db->query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = '" . $this->db->real_escape_string($table) . "'"
+        );
+        if (!($res instanceof \mysqli_result)) { return []; }
+        $columns = [];
+        while ($row = $res->fetch_assoc()) {
+            $columns[(string) $row['COLUMN_NAME']] = true;
+        }
+        $res->free();
+        return $columns;
     }
 
     private function installTriggers(): void
@@ -706,6 +765,12 @@ class OaiPmhServerPlugin
             return;
         }
 
+        if ($set === 'archives' && $metadataPrefix !== 'oai_dc') {
+            $this->oaiError($xw, 'cannotDisseminateFormat',
+                'The requested metadataPrefix is not supported for archival_unit records in this repository.');
+            return;
+        }
+
         // Normalise date strings to MySQL DATETIME format.
         // For date-only values (YYYY-MM-DD) expand to inclusive day boundaries.
         $fromMysql = $from !== ''
@@ -716,7 +781,9 @@ class OaiPmhServerPlugin
             : null;
 
         // Build the combined result set: active records + persistent deletions.
-        $records = $this->fetchRecordsPage($set, $fromMysql, $untilMysql, $cursor, self::PAGE_SIZE + 1);
+        // Non-DC formats are only available for book records on the unified endpoint.
+        $fetchSet = ($set === '' && $metadataPrefix !== 'oai_dc') ? 'books' : $set;
+        $records = $this->fetchRecordsPage($fetchSet, $fromMysql, $untilMysql, $cursor, self::PAGE_SIZE + 1);
 
         // Determine whether there's a next page.
         $hasMore = count($records) > self::PAGE_SIZE;
@@ -832,6 +899,12 @@ class OaiPmhServerPlugin
             return;
         }
 
+        if ($rec['_entity'] === 'archival_unit' && $metadataPrefix !== 'oai_dc') {
+            $this->oaiError($xw, 'cannotDisseminateFormat',
+                'The requested metadataPrefix is not supported for archival_unit records in this repository.');
+            return;
+        }
+
         $datestamp = $this->recordDatestamp($rec);
 
         $xw->startElement('GetRecord');
@@ -848,7 +921,6 @@ class OaiPmhServerPlugin
             $this->writeMetadata($xw, $rec, $metadataPrefix);
             $xw->endElement(); // metadata
         } catch (CannotDisseminateFormatException $e) {
-            try { $xw->endElement(); } catch (\Throwable $ignored) {}
             $this->oaiError($xw, 'cannotDisseminateFormat',
                 'The requested metadataPrefix is not supported for this record type.');
             return;
@@ -1521,12 +1593,14 @@ class OaiPmhServerPlugin
         ?array $genre
     ): void {
         $magNs     = 'http://www.iccu.sbn.it/mag/';
+        $dcNs      = 'http://purl.org/dc/elements/1.1/';
         $magSchema = 'http://www.iccu.sbn.it/mag/mag_V2.0.1.xsd';
 
         // Fetch MAG project config (fallback to defaults).
         $magCfg = $this->fetchMagProjectConfig();
 
-        $xw->startElementNs(null, 'mag', $magNs);
+        $xw->startElementNs(null, 'metadigit', $magNs);
+        $xw->writeAttributeNs('xmlns', 'dc', null, $dcNs);
         $xw->writeAttributeNs('xsi', 'schemaLocation', null, $magNs . ' ' . $magSchema);
         $xw->writeAttribute('version', '2.0.1');
 
@@ -1547,7 +1621,7 @@ class OaiPmhServerPlugin
         // <identifier type="ISBN">
         foreach (['isbn13', 'isbn10'] as $col) {
             if (!empty($row[$col])) {
-                $xw->startElement('identifier');
+                $xw->startElementNs('dc', 'identifier', null);
                 $xw->writeAttribute('type', 'ISBN');
                 $xw->text((string) $row[$col]);
                 $xw->endElement();
@@ -1563,39 +1637,31 @@ class OaiPmhServerPlugin
             $xw->writeElement('data_pub', (string) $row['anno_pubblicazione']);
         }
 
-        // <title>
-        $xw->startElement('title');
-        $xw->writeElement('title_proper', (string) ($row['titolo'] ?? ''));
+        // Dublin Core title.
+        $title = (string) ($row['titolo'] ?? '');
         if (!empty($row['sottotitolo'])) {
-            $xw->writeElement('parallelotitolo', (string) $row['sottotitolo']);
+            $title .= ': ' . (string) $row['sottotitolo'];
         }
-        $xw->endElement(); // title
+        $xw->writeElementNs('dc', 'title', null, $title);
 
-        // <creator> — one entry per author
+        // dc:creator — one entry per author
         foreach ($authors as $a) {
-            $xw->startElement('creator');
-            $xw->writeElement('ente_nome', (string) $a['nome']);
-            $xw->writeElement('affiliation', '');
-            $xw->endElement();
+            $xw->writeElementNs('dc', 'creator', null, (string) $a['nome']);
         }
 
-        // <publisher>
         if ($publisher !== null && !empty($publisher['nome'])) {
-            $xw->writeElement('publisher', (string) $publisher['nome']);
+            $xw->writeElementNs('dc', 'publisher', null, (string) $publisher['nome']);
         }
 
-        // <format>
-        $xw->writeElement('format', (string) ($row['formato'] ?? 'text'));
+        $xw->writeElementNs('dc', 'format', null, (string) ($row['formato'] ?? 'text'));
 
-        // <description>
         $desc = !empty($row['descrizione_plain']) ? $row['descrizione_plain'] : ($row['descrizione'] ?? '');
         if ($desc !== '') {
-            $xw->writeElement('description', strip_tags((string) $desc));
+            $xw->writeElementNs('dc', 'description', null, strip_tags((string) $desc));
         }
 
-        // <subject>
         if ($genre !== null && !empty($genre['nome'])) {
-            $xw->writeElement('subject', (string) $genre['nome']);
+            $xw->writeElementNs('dc', 'subject', null, (string) $genre['nome']);
         }
 
         $xw->endElement(); // bib
@@ -1643,7 +1709,7 @@ class OaiPmhServerPlugin
             $xw->endElement(); // doc
         }
 
-        $xw->endElement(); // mag
+        $xw->endElement(); // metadigit
     }
 
     // ── Archival unit metadata (delegates to archives plugin formats) ─────────

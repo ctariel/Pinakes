@@ -54,9 +54,9 @@ CREATE TABLE `autori` (
   `biografia` text COLLATE utf8mb4_unicode_ci,
   `sito_web` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `viaf_id` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `viaf_uri` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `viaf_uri` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `isni_id` varchar(16) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `isni_uri` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `isni_uri` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `authority_source` enum('manual','viaf','isni','sbn','wikidata') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `authority_confidence` enum('exact','probable','candidate','rejected') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -696,11 +696,14 @@ CREATE TABLE `oai_resumption_tokens` (
 CREATE TABLE `mag_project_config` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `project_code` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PINAKES',
-  `agency` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'Pinakes',
-  `collection` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'Biblioteca Pinakes',
+  `institution_code` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'IT',
+  `collection_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'Biblioteca Pinakes',
+  `rights_statement` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'In Copyright',
+  `base_url` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_project_code` (`project_code`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;

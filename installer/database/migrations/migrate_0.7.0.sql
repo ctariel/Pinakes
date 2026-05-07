@@ -40,7 +40,7 @@ SET @col_exists = (
 );
 SET @sql = IF(
     @col_exists = 0,
-    'ALTER TABLE autori ADD COLUMN viaf_uri VARCHAR(255) DEFAULT NULL AFTER viaf_id',
+    'ALTER TABLE autori ADD COLUMN viaf_uri VARCHAR(500) DEFAULT NULL AFTER viaf_id',
     'SELECT 1'
 );
 PREPARE _stmt FROM @sql;
@@ -70,7 +70,7 @@ SET @col_exists = (
 );
 SET @sql = IF(
     @col_exists = 0,
-    'ALTER TABLE autori ADD COLUMN isni_uri VARCHAR(255) DEFAULT NULL AFTER isni_id',
+    'ALTER TABLE autori ADD COLUMN isni_uri VARCHAR(500) DEFAULT NULL AFTER isni_id',
     'SELECT 1'
 );
 PREPARE _stmt FROM @sql;

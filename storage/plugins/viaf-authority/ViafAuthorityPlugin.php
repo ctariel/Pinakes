@@ -119,18 +119,59 @@ class ViafAuthorityPlugin
     {
         $this->db->query(
             "CREATE TABLE IF NOT EXISTS author_authority_alternates (
-                id             INT AUTO_INCREMENT PRIMARY KEY,
-                autore_id      INT NOT NULL,
-                source_code    VARCHAR(20)  NOT NULL,
-                source_id      VARCHAR(100) NOT NULL,
-                source_uri     VARCHAR(500) NULL,
-                preferred_form VARCHAR(500) NULL,
-                created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                CONSTRAINT fk_aaa_autore FOREIGN KEY (autore_id) REFERENCES autori(id) ON DELETE CASCADE,
-                UNIQUE KEY uq_source (source_code, source_id),
-                INDEX idx_autore_id (autore_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+                id           INT AUTO_INCREMENT PRIMARY KEY,
+                autore_id    INT NOT NULL,
+                source       ENUM('viaf','isni','sbn','wikidata','manual') NOT NULL,
+                authority_id VARCHAR(100) NOT NULL,
+                label        VARCHAR(255) DEFAULT NULL,
+                uri          VARCHAR(255) DEFAULT NULL,
+                confidence   ENUM('exact','probable','candidate','rejected') DEFAULT 'candidate',
+                payload_json JSON DEFAULT NULL,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                KEY idx_autore_id (autore_id),
+                KEY idx_authority (source, authority_id),
+                CONSTRAINT fk_author_authority_alternates_autore
+                    FOREIGN KEY (autore_id) REFERENCES autori(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
         );
+
+        $columns = $this->getExistingColumns('author_authority_alternates');
+        $addColumn = function (string $name, string $ddl) use ($columns): void {
+            if (!isset($columns[$name])) {
+                $this->db->query("ALTER TABLE author_authority_alternates ADD COLUMN {$ddl}");
+            }
+        };
+
+        // Older plugin builds created source_code/source_id/source_uri/preferred_form.
+        // Keep those columns if present, but make the canonical schema available.
+        $addColumn('source', "source ENUM('viaf','isni','sbn','wikidata','manual') NOT NULL DEFAULT 'manual' AFTER autore_id");
+        $addColumn('authority_id', "authority_id VARCHAR(100) NOT NULL DEFAULT '' AFTER source");
+        $addColumn('label', "label VARCHAR(255) DEFAULT NULL AFTER authority_id");
+        $addColumn('uri', "uri VARCHAR(255) DEFAULT NULL AFTER label");
+        $addColumn('confidence', "confidence ENUM('exact','probable','candidate','rejected') DEFAULT 'candidate' AFTER uri");
+        $addColumn('payload_json', "payload_json JSON DEFAULT NULL AFTER confidence");
+
+        if (isset($columns['source_code']) || isset($columns['source_id'])) {
+            $setParts = [];
+            if (isset($columns['source_code'])) {
+                $setParts[] = "source = CASE
+                    WHEN source_code IN ('viaf','isni','sbn','wikidata','manual') THEN source_code
+                    ELSE source
+                END";
+            }
+            if (isset($columns['source_id'])) {
+                $setParts[] = "authority_id = CASE WHEN authority_id = '' THEN COALESCE(source_id, '') ELSE authority_id END";
+            }
+            if (isset($columns['source_uri'])) {
+                $setParts[] = 'uri = COALESCE(uri, source_uri)';
+            }
+            if (isset($columns['preferred_form'])) {
+                $setParts[] = 'label = COALESCE(label, preferred_form)';
+            }
+            if ($setParts !== []) {
+                $this->db->query('UPDATE author_authority_alternates SET ' . implode(', ', $setParts));
+            }
+        }
     }
 
     // ── Hook registration ─────────────────────────────────────────────────────

@@ -19,6 +19,98 @@ CREATE TABLE IF NOT EXISTS digital_assets (
     INDEX idx_libro_id (libro_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- mag_project_config: align legacy/fresh schemas with OaiPmhServerPlugin.
+CREATE TABLE IF NOT EXISTS mag_project_config (
+    id               INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    project_code     VARCHAR(64) NOT NULL DEFAULT 'PINAKES',
+    institution_code VARCHAR(16) NOT NULL DEFAULT 'IT',
+    collection_name  VARCHAR(255) NOT NULL DEFAULT 'Biblioteca Pinakes',
+    rights_statement VARCHAR(500) NOT NULL DEFAULT 'In Copyright',
+    base_url         VARCHAR(500) NOT NULL DEFAULT '',
+    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_project_code (project_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'mag_project_config'
+      AND COLUMN_NAME  = 'institution_code'
+);
+SET @sql = IF(
+    @col_exists = 0,
+    "ALTER TABLE mag_project_config ADD COLUMN institution_code VARCHAR(16) NOT NULL DEFAULT 'IT' AFTER project_code",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'mag_project_config'
+      AND COLUMN_NAME  = 'collection_name'
+);
+SET @sql = IF(
+    @col_exists = 0,
+    "ALTER TABLE mag_project_config ADD COLUMN collection_name VARCHAR(255) NOT NULL DEFAULT 'Biblioteca Pinakes' AFTER institution_code",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+SET @legacy_collection_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'mag_project_config'
+      AND COLUMN_NAME  = 'collection'
+);
+SET @sql = IF(
+    @legacy_collection_exists > 0,
+    "UPDATE mag_project_config SET collection_name = collection WHERE collection_name IN ('', 'Biblioteca Pinakes') AND collection <> ''",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'mag_project_config'
+      AND COLUMN_NAME  = 'rights_statement'
+);
+SET @sql = IF(
+    @col_exists = 0,
+    "ALTER TABLE mag_project_config ADD COLUMN rights_statement VARCHAR(500) NOT NULL DEFAULT 'In Copyright' AFTER collection_name",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'mag_project_config'
+      AND COLUMN_NAME  = 'base_url'
+);
+SET @sql = IF(
+    @col_exists = 0,
+    "ALTER TABLE mag_project_config ADD COLUMN base_url VARCHAR(500) NOT NULL DEFAULT '' AFTER rights_statement",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+SET @idx_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'mag_project_config'
+      AND INDEX_NAME   = 'uq_project_code'
+);
+SET @sql = IF(
+    @idx_exists = 0,
+    'ALTER TABLE mag_project_config ADD UNIQUE KEY uq_project_code (project_code)',
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
 -- ncip_partners: create if it does not exist yet (fresh-install path);
 -- upgrade path: the ALTER TABLE statements below add columns that may be missing.
 CREATE TABLE IF NOT EXISTS ncip_partners (
@@ -162,6 +254,9 @@ PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 -- ─── Self-contained upgrade for installs at v0.7.3 ───────────────────────────
 -- migrate_0.7.3.sql is skipped when upgrading FROM exactly v0.7.3 (updater lower-bound
 -- check). The prestiti schema changes and plugin registration below are idempotent.
+
+ALTER TABLE autori MODIFY COLUMN viaf_uri VARCHAR(500) DEFAULT NULL;
+ALTER TABLE autori MODIFY COLUMN isni_uri VARCHAR(500) DEFAULT NULL;
 
 SET @col_exists = (
     SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
