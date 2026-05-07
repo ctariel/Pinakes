@@ -277,7 +277,7 @@ class OpenLibraryPlugin
 
             // Build response in the format expected by the application
             $openLibraryData = [
-                'title' => (string) ($editionData['title'] ?? ''),
+                'title' => (string) $editionData['title'],
                 'subtitle' => $editionData['subtitle'] ?? '',
                 'author' => implode(', ', $authorNames),
                 'authors' => $authorsList,
