@@ -3,12 +3,16 @@
  * Archives — index (list) view.
  *
  * @var array<int, array<string, mixed>> $rows
+ * @var string|null $q
+ * @var string|null $level
  */
 declare(strict_types=1);
 
 use App\Support\HtmlHelper;
 
 $e = static fn(mixed $v): string => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
+$q     = $q     ?? '';
+$level = $level ?? '';
 
 // Build a parent_id → children index so we can render a lightweight tree by
 // visiting top-level rows first and recursing. A real CTE-backed tree is
@@ -146,16 +150,79 @@ $rootRows = $byParent[0] ?? [];
         </div>
     </div>
 
-    <?php if (empty($rows)): ?>
-        <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded">
-            <p class="text-sm text-yellow-800">
-                <strong><?= __("Nessun record archivistico.") ?></strong>
-                <?= __("Crea il primo fondo (fonds) per iniziare a strutturare l'archivio.") ?>
-            </p>
-            <p class="text-xs text-yellow-700 mt-2">
-                <?= __("Gerarchia consigliata: Fondo → Serie → Fascicolo → Unità (ISAD(G) 3.1.4).") ?>
-            </p>
+    <form method="GET" action="<?= $e(url('/admin/archives')) ?>"
+          class="bg-white shadow rounded-lg p-4 mb-6 flex flex-wrap items-end gap-3">
+        <div class="flex-1 min-w-[200px]">
+            <label for="arc-q" class="block text-xs font-medium text-gray-600 mb-1">
+                <?= __("Ricerca (titolo, reference code, descrizione)") ?>
+            </label>
+            <input id="arc-q" type="search" name="q" value="<?= $e($q) ?>"
+                   placeholder="<?= $e(__("es. IT-MI-001 o Fondo Rossi")) ?>"
+                   class="w-full rounded-md border-gray-300 shadow-sm text-sm focus:border-blue-500 focus:ring-blue-500">
         </div>
+        <div class="min-w-[150px]">
+            <label for="arc-level" class="block text-xs font-medium text-gray-600 mb-1">
+                <?= __("Livello") ?>
+            </label>
+            <select id="arc-level" name="level"
+                    class="w-full rounded-md border-gray-300 shadow-sm text-sm focus:border-blue-500 focus:ring-blue-500">
+                <option value=""><?= __("Tutti i livelli") ?></option>
+                <option value="fonds"  <?= $level === 'fonds'  ? 'selected' : '' ?>><?= __("Fondo")      ?></option>
+                <option value="series" <?= $level === 'series' ? 'selected' : '' ?>><?= __("Serie")      ?></option>
+                <option value="file"   <?= $level === 'file'   ? 'selected' : '' ?>><?= __("Fascicolo")  ?></option>
+                <option value="item"   <?= $level === 'item'   ? 'selected' : '' ?>><?= __("Unità")      ?></option>
+            </select>
+        </div>
+        <div class="flex items-end gap-2">
+            <button type="submit" class="btn-primary">
+                <svg class="w-4 h-4 inline -mt-0.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+                <?= __("Cerca") ?>
+            </button>
+            <?php if ($q !== '' || $level !== ''): ?>
+                <a href="<?= $e(url('/admin/archives')) ?>" class="btn-secondary">
+                    <?= __("Azzera") ?>
+                </a>
+            <?php endif; ?>
+        </div>
+    </form>
+
+    <?php if (($q !== '' || $level !== '') && !empty($rows)): ?>
+        <p class="text-sm text-gray-600 mb-3">
+            <?= sprintf(__("%d risultati"), count($rows)) ?>
+            <?php if ($q !== ''): ?>
+                <?= __("per") ?> <strong><?= $e($q) ?></strong>
+            <?php endif; ?>
+            <?php if ($level !== ''): ?>
+                · <?= __("livello") ?>: <strong><?= $e($level) ?></strong>
+            <?php endif; ?>
+        </p>
+    <?php endif; ?>
+
+    <?php
+    $isFiltered = $q !== '' || $level !== '';
+    if (empty($rows)): ?>
+        <?php if ($isFiltered): ?>
+            <div class="bg-gray-50 border border-gray-200 p-6 rounded text-center">
+                <p class="text-sm text-gray-700">
+                    <?= __("Nessun risultato") ?>
+                    <?php if ($q !== ''): ?> <?= __("per") ?> <strong><?= $e($q) ?></strong><?php endif; ?>
+                    <?php if ($level !== ''): ?> · <?= __("livello") ?>: <strong><?= $e($level) ?></strong><?php endif; ?>.
+                </p>
+            </div>
+        <?php else: ?>
+            <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded">
+                <p class="text-sm text-yellow-800">
+                    <strong><?= __("Nessun record archivistico.") ?></strong>
+                    <?= __("Crea il primo fondo (fonds) per iniziare a strutturare l'archivio.") ?>
+                </p>
+                <p class="text-xs text-yellow-700 mt-2">
+                    <?= __("Gerarchia consigliata: Fondo → Serie → Fascicolo → Unità (ISAD(G) 3.1.4).") ?>
+                </p>
+            </div>
+        <?php endif; ?>
     <?php else: ?>
         <div class="bg-white shadow rounded-lg overflow-hidden">
             <table class="min-w-full divide-y divide-gray-200">
@@ -170,26 +237,28 @@ $rootRows = $byParent[0] ?? [];
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
-                    <?php
-                    foreach ($rootRows as $row) {
-                        echo $renderRow($row, 0);
-                    }
-                    // Second pass: pick up any remaining rows that belong
-                    // to an orphan cycle (A↔B) with no path from a real
-                    // root. These would otherwise disappear from the admin
-                    // view even though they exist in the DB.
-                    foreach ($rows as $row) {
-                        $rowId = (int) $row['id'];
-                        if (!isset($renderedIds[$rowId])) {
+                    <?php if ($isFiltered): ?>
+                        <?php foreach ($rows as $row): ?>
+                            <?= $renderRow($row, 0) ?>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <?php
+                        foreach ($rootRows as $row) {
                             echo $renderRow($row, 0);
                         }
-                    }
-                    ?>
+                        // Second pass: orphan cycles (A↔B) with no path from a real root.
+                        foreach ($rows as $row) {
+                            if (!isset($renderedIds[(int) $row['id']])) {
+                                echo $renderRow($row, 0);
+                            }
+                        }
+                        ?>
+                    <?php endif; ?>
                 </tbody>
             </table>
         </div>
         <p class="text-xs text-gray-500 mt-3">
-            <?= sprintf(__("Mostrati %d record su un massimo di %d per pagina."), count($rows), 500) ?>
+            <?= sprintf(__("Mostrati %d record su un massimo di %d per pagina."), count($rows), $isFiltered ? 500 : 500) ?>
         </p>
     <?php endif; ?>
 </div>

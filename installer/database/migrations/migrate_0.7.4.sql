@@ -397,3 +397,27 @@ ON DUPLICATE KEY UPDATE
     requires_php  = VALUES(requires_php),
     requires_app  = VALUES(requires_app),
     metadata      = VALUES(metadata);
+
+-- Ensure archives plugin hooks are registered.
+-- Uses INSERT ... ON DUPLICATE KEY to be idempotent (safe to re-run).
+-- Covers installations where onActivate() was never re-called after adding
+-- the search.unified.sources and frontend.catalog.archive_results hooks.
+INSERT INTO plugin_hooks (plugin_id, hook_name, callback_class, callback_method, priority, is_active, created_at)
+SELECT p.id, 'app.routes.register', 'ArchivesPlugin', 'registerRoutes', 10, 1, NOW()
+  FROM plugins p WHERE p.name = 'archives'
+ON DUPLICATE KEY UPDATE is_active = 1;
+
+INSERT INTO plugin_hooks (plugin_id, hook_name, callback_class, callback_method, priority, is_active, created_at)
+SELECT p.id, 'admin.menu.render', 'ArchivesPlugin', 'renderAdminMenuEntry', 10, 1, NOW()
+  FROM plugins p WHERE p.name = 'archives'
+ON DUPLICATE KEY UPDATE is_active = 1;
+
+INSERT INTO plugin_hooks (plugin_id, hook_name, callback_class, callback_method, priority, is_active, created_at)
+SELECT p.id, 'search.unified.sources', 'ArchivesPlugin', 'addArchivalSources', 10, 1, NOW()
+  FROM plugins p WHERE p.name = 'archives'
+ON DUPLICATE KEY UPDATE is_active = 1;
+
+INSERT INTO plugin_hooks (plugin_id, hook_name, callback_class, callback_method, priority, is_active, created_at)
+SELECT p.id, 'frontend.catalog.archive_results', 'ArchivesPlugin', 'getPublicArchiveResults', 10, 1, NOW()
+  FROM plugins p WHERE p.name = 'archives'
+ON DUPLICATE KEY UPDATE is_active = 1;

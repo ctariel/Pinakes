@@ -143,9 +143,10 @@ class ArchivesPlugin
         }
         $this->db->begin_transaction();
         try {
-            $this->registerHookInDb('app.routes.register',    'registerRoutes',       10);
-            $this->registerHookInDb('admin.menu.render',      'renderAdminMenuEntry', 10);
-            $this->registerHookInDb('search.unified.sources', 'addArchivalSources',   10);
+            $this->registerHookInDb('app.routes.register',              'registerRoutes',          10);
+            $this->registerHookInDb('admin.menu.render',              'renderAdminMenuEntry',    10);
+            $this->registerHookInDb('search.unified.sources',         'addArchivalSources',      10);
+            $this->registerHookInDb('frontend.catalog.archive_results', 'getPublicArchiveResults', 10);
             $this->db->commit();
         } catch (\Throwable $e) {
             $this->db->rollback();
@@ -910,28 +911,71 @@ class ArchivesPlugin
         ServerRequestInterface $request,
         ResponseInterface $response
     ): ResponseInterface {
+        $params = $request->getQueryParams();
+        $q      = trim((string) ($params['q'] ?? ''));
+        $level  = isset(self::LEVELS[$params['level'] ?? '']) ? $params['level'] : '';
+
         $rows = [];
-        // Order by level first so fonds appear before their series/files/items,
-        // then by reference_code for stable ordering inside a level. A proper
-        // recursive CTE tree view is roadmapped for Phase 2.
-        $result = $this->db->query(
-            "SELECT id, parent_id, reference_code, level, constructed_title, formal_title,
-                    date_start, date_end, extent, language_codes, created_at
-               FROM archival_units
-              WHERE deleted_at IS NULL
-              ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
-              LIMIT 500"
-        );
-        if ($result instanceof \mysqli_result) {
-            while ($row = $result->fetch_assoc()) {
-                $rows[] = $row;
+        if ($q !== '' || $level !== '') {
+            $whereParts = ['deleted_at IS NULL'];
+            $bindTypes  = '';
+            $bindValues = [];
+
+            if ($q !== '') {
+                $pattern = $this->archiveSearchPattern($q);
+                $whereParts[] = '(reference_code LIKE ? OR constructed_title LIKE ? OR formal_title LIKE ? OR scope_content LIKE ?)';
+                $bindTypes  .= 'ssss';
+                $bindValues = array_merge($bindValues, [$pattern, $pattern, $pattern, $pattern]);
             }
-            $result->free();
+            if ($level !== '') {
+                $whereParts[] = 'level = ?';
+                $bindTypes  .= 's';
+                $bindValues[] = $level;
+            }
+
+            $sql  = "SELECT id, parent_id, reference_code, level, constructed_title, formal_title,
+                            date_start, date_end, extent, language_codes, created_at
+                       FROM archival_units
+                      WHERE " . implode(' AND ', $whereParts) . "
+                      ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
+                      LIMIT 500";
+            $stmt = $this->db->prepare($sql);
+            if ($stmt !== false) {
+                if ($bindTypes !== '') {
+                    $stmt->bind_param($bindTypes, ...$bindValues);
+                }
+                $stmt->execute();
+                $result = $stmt->get_result();
+                if ($result instanceof \mysqli_result) {
+                    while ($row = $result->fetch_assoc()) { $rows[] = $row; }
+                    $result->free();
+                }
+                $stmt->close();
+            }
         } else {
-            SecureLogger::warning('[Archives] index query failed: ' . $this->db->error);
+            // Order by level first so fonds appear before their series/files/items,
+            // then by reference_code for stable ordering inside a level.
+            $result = $this->db->query(
+                "SELECT id, parent_id, reference_code, level, constructed_title, formal_title,
+                        date_start, date_end, extent, language_codes, created_at
+                   FROM archival_units
+                  WHERE deleted_at IS NULL
+                  ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
+                  LIMIT 500"
+            );
+            if ($result instanceof \mysqli_result) {
+                while ($row = $result->fetch_assoc()) { $rows[] = $row; }
+                $result->free();
+            } else {
+                SecureLogger::warning('[Archives] index query failed: ' . $this->db->error);
+            }
         }
 
-        return $this->renderView($response, 'index', ['rows' => $rows]);
+        return $this->renderView($response, 'index', [
+            'rows'  => $rows,
+            'q'     => $q,
+            'level' => $level,
+        ]);
     }
 
     /**
@@ -2165,37 +2209,96 @@ class ArchivesPlugin
 
     /**
      * GET /archivio (it) / /archive (en) / /archiv (de) — public index.
-     * Lists all root-level (parent_id IS NULL) archival_units. Anonymous
-     * browsing; no auth required.
+     * Lists root-level archival_units, or full-text search results when ?q= is set.
      */
     public function publicIndexAction(
         ServerRequestInterface $request,
         ResponseInterface $response
     ): ResponseInterface {
+        $params    = $request->getQueryParams();
+        $q         = trim((string) ($params['q'] ?? ''));
+        $level     = isset(self::LEVELS[$params['level'] ?? '']) ? $params['level'] : '';
+        $dateFrom  = (string) ($params['date_from'] ?? '');
+        $dateTo    = (string) ($params['date_to'] ?? '');
+
         $rows = [];
-        $stmt = $this->db->prepare(
-            "SELECT id, reference_code, level, formal_title, constructed_title,
-                    date_start, date_end, extent, scope_content, specific_material
-               FROM archival_units
-              WHERE deleted_at IS NULL AND parent_id IS NULL
-              ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
-              LIMIT 500"
-        );
-        if ($stmt !== false) {
-            $stmt->execute();
-            $result = $stmt->get_result();
-            if ($result instanceof \mysqli_result) {
-                while ($r = $result->fetch_assoc()) {
-                    $rows[] = $r;
-                }
-                $result->free();
+        $isSearch = $q !== '' || $level !== '' || $dateFrom !== '' || $dateTo !== '';
+
+        if ($isSearch) {
+            $whereParts = ['deleted_at IS NULL'];
+            $bindTypes  = '';
+            $bindValues = [];
+
+            if ($q !== '') {
+                $pattern = $this->archiveSearchPattern($q);
+                $whereParts[] = '(reference_code LIKE ? OR constructed_title LIKE ? OR formal_title LIKE ? OR scope_content LIKE ?)';
+                $bindTypes  .= 'ssss';
+                $bindValues = array_merge($bindValues, [$pattern, $pattern, $pattern, $pattern]);
             }
-            $stmt->close();
+            if ($level !== '') {
+                $whereParts[] = 'level = ?';
+                $bindTypes  .= 's';
+                $bindValues[] = $level;
+            }
+            if ($dateFrom !== '' && ctype_digit($dateFrom)) {
+                $whereParts[] = '(date_end IS NULL OR date_end >= ?)';
+                $bindTypes  .= 'i';
+                $bindValues[] = (int) $dateFrom;
+            }
+            if ($dateTo !== '' && ctype_digit($dateTo)) {
+                $whereParts[] = '(date_start IS NULL OR date_start <= ?)';
+                $bindTypes  .= 'i';
+                $bindValues[] = (int) $dateTo;
+            }
+
+            $sql  = "SELECT id, reference_code, level, formal_title, constructed_title,
+                            date_start, date_end, extent, scope_content, specific_material
+                       FROM archival_units
+                      WHERE " . implode(' AND ', $whereParts) . "
+                      ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
+                      LIMIT 200";
+            $stmt = $this->db->prepare($sql);
+            if ($stmt !== false) {
+                if ($bindTypes !== '') {
+                    $stmt->bind_param($bindTypes, ...$bindValues);
+                }
+                $stmt->execute();
+                $result = $stmt->get_result();
+                if ($result instanceof \mysqli_result) {
+                    while ($r = $result->fetch_assoc()) { $rows[] = $r; }
+                    $result->free();
+                }
+                $stmt->close();
+            }
+        } else {
+            $stmt = $this->db->prepare(
+                "SELECT id, reference_code, level, formal_title, constructed_title,
+                        date_start, date_end, extent, scope_content, specific_material
+                   FROM archival_units
+                  WHERE deleted_at IS NULL AND parent_id IS NULL
+                  ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
+                  LIMIT 500"
+            );
+            if ($stmt !== false) {
+                $stmt->execute();
+                $result = $stmt->get_result();
+                if ($result instanceof \mysqli_result) {
+                    while ($r = $result->fetch_assoc()) { $rows[] = $r; }
+                    $result->free();
+                }
+                $stmt->close();
+            }
         }
+
         $viewPath = __DIR__ . '/views/public/index.php';
         return $this->renderPublic($response, $viewPath, [
-            'rows' => $rows,
-            'total' => count($rows),
+            'rows'      => $rows,
+            'total'     => count($rows),
+            'q'         => $q,
+            'level'     => $level,
+            'date_from' => $dateFrom,
+            'date_to'   => $dateTo,
+            'isSearch'  => $isSearch,
         ]);
     }
 
@@ -3799,29 +3902,68 @@ class ArchivesPlugin
     private function searchArchivalUnits(string $q, int $limit): array
     {
         $rows = [];
+        $seen = [];
+
+        // Pass 1 — LIKE on reference_code. Short codes ("IT-MI-001", "1943")
+        // are below MySQL's ft_min_word_len threshold and would never surface
+        // in a FULLTEXT query, so we always probe reference_code with LIKE first.
+        $pattern = '%' . $q . '%';
         $stmt = $this->db->prepare(
             'SELECT id, reference_code, level, constructed_title, formal_title,
-                    date_start, date_end, extent,
-                    MATCH(formal_title, constructed_title, scope_content, archival_history)
-                        AGAINST (? IN NATURAL LANGUAGE MODE) AS score
+                    date_start, date_end, extent
                FROM archival_units
               WHERE deleted_at IS NULL
-                AND MATCH(formal_title, constructed_title, scope_content, archival_history)
-                        AGAINST (? IN NATURAL LANGUAGE MODE)
-              ORDER BY score DESC
+                AND reference_code LIKE ?
+              ORDER BY reference_code ASC
               LIMIT ?'
         );
-        if ($stmt === false) {
-            return $rows;
+        if ($stmt !== false) {
+            $stmt->bind_param('si', $pattern, $limit);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            if ($result instanceof \mysqli_result) {
+                while ($r = $result->fetch_assoc()) {
+                    $rows[] = $r;
+                    $seen[(int) $r['id']] = true;
+                }
+                $result->free();
+            }
+            $stmt->close();
         }
-        $stmt->bind_param('ssi', $q, $q, $limit);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        if ($result instanceof \mysqli_result) {
-            while ($r = $result->fetch_assoc()) { $rows[] = $r; }
-            $result->free();
+
+        // Pass 2 — FULLTEXT for title / scope / history (skips words < 3 chars).
+        $remaining = $limit - count($rows);
+        if ($remaining > 0 && strlen($q) >= 3) {
+            $stmt = $this->db->prepare(
+                'SELECT id, reference_code, level, constructed_title, formal_title,
+                        date_start, date_end, extent,
+                        MATCH(formal_title, constructed_title, scope_content, archival_history)
+                            AGAINST (? IN NATURAL LANGUAGE MODE) AS score
+                   FROM archival_units
+                  WHERE deleted_at IS NULL
+                    AND MATCH(formal_title, constructed_title, scope_content, archival_history)
+                            AGAINST (? IN NATURAL LANGUAGE MODE)
+                  ORDER BY score DESC
+                  LIMIT ?'
+            );
+            if ($stmt !== false) {
+                $stmt->bind_param('ssi', $q, $q, $remaining + count($seen));
+                $stmt->execute();
+                $result = $stmt->get_result();
+                if ($result instanceof \mysqli_result) {
+                    while ($r = $result->fetch_assoc()) {
+                        $rid = (int) $r['id'];
+                        if (!isset($seen[$rid])) {
+                            $rows[] = $r;
+                            $seen[$rid] = true;
+                        }
+                    }
+                    $result->free();
+                }
+                $stmt->close();
+            }
         }
-        $stmt->close();
+
         return $rows;
     }
 
@@ -5841,6 +5983,16 @@ class ArchivesPlugin
     }
 
     /**
+     * Returns a LIKE pattern for $q, stripping the last char when len >= 5
+     * so that "disegno" matches "disegni" (shared root "disegn-").
+     */
+    private function archiveSearchPattern(string $q): string
+    {
+        $stem = strlen($q) >= 5 ? substr($q, 0, -1) : $q;
+        return '%' . $stem . '%';
+    }
+
+    /**
      * Filter hook: search.unified.sources
      *
      * Appends archival_units that match $q (via LIKE on reference_code, title
@@ -5862,7 +6014,8 @@ class ArchivesPlugin
         if ($q === '') {
             return $results;
         }
-        $searchPattern = '%' . $q . '%';
+        $archiveBase = \App\Support\RouteTranslator::route('archives') ?: '/archivio';
+        $searchPattern = $this->archiveSearchPattern($q);
         $stmt = $this->db->prepare(
             'SELECT id, reference_code, constructed_title
                FROM archival_units
@@ -5884,12 +6037,69 @@ class ArchivesPlugin
         $res = $stmt->get_result();
         if ($res instanceof \mysqli_result) {
             while ($row = $res->fetch_assoc()) {
+                $id    = (int) $row['id'];
+                $title = (string) ($row['constructed_title'] ?? '');
+                $slug  = slugify_text($title);
                 $results[] = [
-                    'id'         => (int) $row['id'],
-                    'label'      => (string) ($row['constructed_title'] ?? ''),
+                    'id'         => $id,
+                    'label'      => $title,
                     'identifier' => (string) ($row['reference_code'] ?? ''),
                     'type'       => 'archive',
-                    'url'        => url('/admin/archives/' . (int) $row['id']),
+                    'url'        => url($archiveBase . ($slug !== '' ? '/' . $slug . '-' . $id : '/' . $id)),
+                ];
+            }
+            $res->free();
+        }
+        $stmt->close();
+        return $results;
+    }
+
+    /**
+     * Hook: frontend.catalog.archive_results
+     * Called from FrontendController::catalog() when a search is active.
+     * Returns archive units matching $q for display in the book catalog page.
+     *
+     * @param array<int, array<string, mixed>> $results
+     * @return array<int, array<string, mixed>>
+     */
+    public function getPublicArchiveResults(array $results, string $q): array
+    {
+        if ($q === '') {
+            return $results;
+        }
+        $archiveBase = \App\Support\RouteTranslator::route('archives') ?: '/archivio';
+        $searchPattern = $this->archiveSearchPattern($q);
+        $stmt = $this->db->prepare(
+            'SELECT id, reference_code, level, constructed_title, scope_content
+               FROM archival_units
+              WHERE deleted_at IS NULL
+                AND (
+                    reference_code LIKE ?
+                    OR constructed_title LIKE ?
+                    OR formal_title LIKE ?
+                    OR scope_content LIKE ?
+                )
+              ORDER BY FIELD(level,\'fonds\',\'series\',\'file\',\'item\'), constructed_title
+              LIMIT 6'
+        );
+        if ($stmt === false) {
+            return $results;
+        }
+        $stmt->bind_param('ssss', $searchPattern, $searchPattern, $searchPattern, $searchPattern);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if ($res instanceof \mysqli_result) {
+            while ($row = $res->fetch_assoc()) {
+                $id    = (int) $row['id'];
+                $title = (string) ($row['constructed_title'] ?? '');
+                $slug  = slugify_text($title);
+                $results[] = [
+                    'id'            => $id,
+                    'label'         => $title,
+                    'reference_code' => (string) ($row['reference_code'] ?? ''),
+                    'level'         => (string) ($row['level'] ?? ''),
+                    'scope_content' => (string) ($row['scope_content'] ?? ''),
+                    'url'           => url($archiveBase . ($slug !== '' ? '/' . $slug . '-' . $id : '/' . $id)),
                 ];
             }
             $res->free();
