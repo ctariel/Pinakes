@@ -1608,17 +1608,19 @@ class ArchivesPlugin
             );
             if ($stmt !== false) {
                 $stmt->bind_param('isssi', $id, $relPath, $mime, $clientName, $id);
-                $stmt->execute();
+                $inserted = $stmt->execute();
                 $stmt->close();
-                // Null out legacy single-document columns so they no longer act
-                // as an orphaned reference now that the file lives in archival_unit_files.
-                $nullStmt = $this->db->prepare(
-                    'UPDATE archival_units SET document_path = NULL, document_mime = NULL, document_filename = NULL WHERE id = ?'
-                );
-                if ($nullStmt !== false) {
-                    $nullStmt->bind_param('i', $id);
-                    $nullStmt->execute();
-                    $nullStmt->close();
+                if ($inserted) {
+                    // Null out legacy single-document columns only after a confirmed
+                    // INSERT, so we don't orphan the existing reference on failure.
+                    $nullStmt = $this->db->prepare(
+                        'UPDATE archival_units SET document_path = NULL, document_mime = NULL, document_filename = NULL WHERE id = ?'
+                    );
+                    if ($nullStmt !== false) {
+                        $nullStmt->bind_param('i', $id);
+                        $nullStmt->execute();
+                        $nullStmt->close();
+                    }
                 }
             }
         }
@@ -6297,7 +6299,7 @@ class ArchivesPlugin
         if ($q === '') {
             return $results;
         }
-        $archiveBase = \App\Support\RouteTranslator::route('archives') ?: '/archivio';
+        $archiveBase = \App\Support\RouteTranslator::route('archives') ?: '/archive';
         $searchPattern = $this->archiveSearchPattern($q);
         $stmt = $this->db->prepare(
             'SELECT id, reference_code, constructed_title
@@ -6350,7 +6352,7 @@ class ArchivesPlugin
         if ($q === '') {
             return $results;
         }
-        $archiveBase = \App\Support\RouteTranslator::route('archives') ?: '/archivio';
+        $archiveBase = \App\Support\RouteTranslator::route('archives') ?: '/archive';
         $searchPattern = $this->archiveSearchPattern($q);
         $stmt = $this->db->prepare(
             'SELECT id, reference_code, level, constructed_title, scope_content

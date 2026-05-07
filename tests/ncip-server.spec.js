@@ -384,4 +384,15 @@ test.describe.serial('NCIP 2.0 Server plugin — v0.7.4 (20 tests)', () => {
         expect(text).toContain('CancelRequestItemResponse');
         expect(text).toContain(`<ItemIdentifierValue>${ncipLoanBookId}</ItemIdentifierValue>`);
     });
+
+    test.afterAll(async () => {
+        // Clean up any NCIP loans that survived (e.g. test 10/20 skipped or failed).
+        try {
+            if (testBookId > 0) {
+                dbExec(
+                    `DELETE FROM prestiti WHERE libro_id = ${testBookId} AND origine = 'ncip'`
+                );
+            }
+        } catch { /* best-effort */ }
+    });
 });

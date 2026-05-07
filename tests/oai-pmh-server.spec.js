@@ -128,14 +128,14 @@ test.describe.serial('OAI-PMH Server plugin — v0.7.0 (16 tests)', () => {
 
         // Pre-cleanup stale oai_deleted_records from prior runs.
         try {
-            dbExec(`DELETE FROM oai_deleted_records WHERE oai_id LIKE 'oai:%:book:%' AND entity_id IN (SELECT id FROM libri WHERE titolo LIKE 'E2E_OAI_%')`);
+            dbExec(`DELETE FROM oai_deleted_records WHERE oai_id LIKE 'oai:%:book:%' AND entity_id IN (SELECT id FROM libri WHERE titolo LIKE 'E2E\\_OAI\\_%' ESCAPE '\\\\')`);
         } catch { /* best-effort */ }
     });
 
     test.afterAll(async () => {
         try {
-            dbExec(`DELETE FROM libri WHERE titolo LIKE 'E2E_OAI_%'`);
-            dbExec(`DELETE FROM archival_units WHERE reference_code LIKE 'E2E_OAI_%' ESCAPE '\\\\'`);
+            dbExec(`DELETE FROM libri WHERE titolo LIKE 'E2E\\_OAI\\_%' ESCAPE '\\\\'`);
+            dbExec(`DELETE FROM archival_units WHERE reference_code LIKE 'E2E\\_OAI\\_%' ESCAPE '\\\\'`);
         } catch { /* best-effort */ }
         await context?.close();
     });

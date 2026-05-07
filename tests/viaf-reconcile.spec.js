@@ -79,7 +79,9 @@ test.describe.serial('W3C Reconciliation API — v0.7.4 (18 tests)', () => {
     let testAuthorName = '';
 
     test.beforeAll(async () => {
-        const row = dbQuery("SELECT nome FROM autori ORDER BY id LIMIT 1");
+        const row = dbQuery(
+            "SELECT nome FROM autori WHERE nome IS NOT NULL AND TRIM(nome) <> '' ORDER BY id LIMIT 1"
+        );
         testAuthorName = row.trim();
     });
 

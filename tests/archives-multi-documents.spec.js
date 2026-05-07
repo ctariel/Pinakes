@@ -54,7 +54,6 @@ const SEED_SQL     = path.join(__dirname, 'seeds/archives-unit-files.sql');
 
 function mysqlArgs(sql = '', batch = false) {
     const args = ['-u', DB_USER];
-    if (DB_PASS !== '') args.push(`-p${DB_PASS}`);
     if (DB_SOCKET) args.push('-S', DB_SOCKET);
     args.push(DB_NAME);
     if (batch) args.push('-N', '-B');

@@ -16,6 +16,7 @@ on:
       - 'composer.lock'
       - 'phpstan.neon'
       - 'phpstan-baseline.neon'
+      - '.github/workflows/ci-quality.yml'
   workflow_dispatch:
 
 permissions:

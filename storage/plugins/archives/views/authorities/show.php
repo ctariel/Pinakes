@@ -35,7 +35,7 @@ $levelBadge = [
     'item'   => 'bg-gray-100 text-gray-800',
 ];
 $badgeClass = $typeBadge[(string) $row['type']] ?? 'bg-gray-100 text-gray-800';
-$typeText   = $typeLabel[(string) $row['type']] ?? $v('type');
+$typeText   = $typeLabel[(string) $row['type']] ?? (string) ($row['type'] ?? '');
 $id = (int) $row['id'];
 ?>
 <div class="p-6 max-w-4xl mx-auto">

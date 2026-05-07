@@ -265,7 +265,7 @@ $rootRows = $byParent[0] ?? [];
             </table>
         </div>
         <p class="text-xs text-gray-500 mt-3">
-            <?= sprintf(__("Mostrati %d record su un massimo di %d per pagina."), count($rows), $isFiltered ? 500 : 500) ?>
+            <?= sprintf(__("Mostrati %d record su un massimo di %d per pagina."), count($rows), 500) ?>
         </p>
     <?php endif; ?>
 </div>

@@ -228,8 +228,15 @@ test.describe.serial('MAG 2.0.1 metadata validation — v0.7.4 (18 tests)', () =
             `${BASE}/oai?verb=GetRecord&metadataPrefix=mag&identifier=oai:pinakes:book:${testBookId}`
         );
         const body = await res.text();
-        // Title may be HTML-encoded in XML
         expect(body).toContain('<dc:title>');
+        // Extract <dc:title> value and compare with DB title (XML may HTML-encode chars).
+        const match = body.match(/<dc:title>([^<]*)<\/dc:title>/);
+        if (match) {
+            const xmlTitle = match[1]
+                .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
+            expect(xmlTitle).toBe(testBookTitle);
+        }
     });
 
     // ── Tests 16-17: <doc> section (file presence) ───────────────────────────
