@@ -941,9 +941,7 @@ class ArchivesPlugin
                       LIMIT 500";
             $stmt = $this->db->prepare($sql);
             if ($stmt !== false) {
-                if ($bindTypes !== '') {
-                    $stmt->bind_param($bindTypes, ...$bindValues);
-                }
+                $stmt->bind_param($bindTypes, ...$bindValues);
                 $stmt->execute();
                 $result = $stmt->get_result();
                 if ($result instanceof \mysqli_result) {
