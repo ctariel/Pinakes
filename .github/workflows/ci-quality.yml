@@ -59,18 +59,43 @@ jobs:
         continue-on-error: true  # Warn, don't block — js devDependencies may have unfixed advisories
 
       # ── Translation completeness ──────────────────────────────────────────
-      - name: Translation key parity (en_US ↔ de_DE)
+      - name: Translation key parity (en_US ↔ de_DE ↔ it_IT, exact sets + placeholders)
         run: |
-          EN=$(python3 -c "import json,sys; d=json.load(open('locale/en_US.json')); print(len(d))")
-          DE=$(python3 -c "import json,sys; d=json.load(open('locale/de_DE.json')); print(len(d))")
-          echo "en_US: $EN keys  |  de_DE: $DE keys"
-          if [ "$EN" -ne "$DE" ]; then
-            DIFF=$((EN - DE))
-            echo "✗ de_DE.json ha $DIFF chiavi in meno rispetto a en_US.json"
-            echo "  Esegui: diff <(jq -r 'keys[]' locale/en_US.json | sort) <(jq -r 'keys[]' locale/de_DE.json | sort)"
-            exit 1
-          fi
-          echo "✓ Parità chiavi: $EN = $DE"
+          FAILED=0
+          # 1. Exact key-set parity between all three locales
+          for PAIR in "en_US:de_DE" "en_US:it_IT"; do
+            A=${PAIR%%:*}; B=${PAIR##*:}
+            MISSING=$(comm -23 <(jq -r 'keys[]' locale/${A}.json | sort) <(jq -r 'keys[]' locale/${B}.json | sort))
+            EXTRA=$(comm -13 <(jq -r 'keys[]' locale/${A}.json | sort) <(jq -r 'keys[]' locale/${B}.json | sort))
+            if [ -n "$MISSING" ]; then
+              echo "✗ ${B}.json manca di chiavi presenti in ${A}.json:"
+              echo "$MISSING" | sed 's/^/    /'
+              FAILED=1
+            fi
+            if [ -n "$EXTRA" ]; then
+              echo "✗ ${B}.json ha chiavi extra non presenti in ${A}.json:"
+              echo "$EXTRA" | sed 's/^/    /'
+              FAILED=1
+            fi
+          done
+          # 2. Placeholder parity: %s / %d must match count between en_US and de_DE
+          python3 - <<'PYEOF'
+import json, re, sys
+en = json.load(open('locale/en_US.json'))
+de = json.load(open('locale/de_DE.json'))
+ph = re.compile(r'%(?:\d+\$)?[sd]')
+failed = 0
+for k in en:
+    if k not in de:
+        continue
+    ep = sorted(ph.findall(str(en[k])))
+    dp = sorted(ph.findall(str(de[k])))
+    if ep != dp:
+        print(f'✗ Placeholder mismatch for key "{k[:80]}": en={ep} de={dp}')
+        failed = 1
+sys.exit(failed)
+PYEOF
+          [ "$FAILED" -eq 0 ] && echo "✓ Parità chiavi e placeholder confermata" || exit 1
 
       # ── Route key integrity ───────────────────────────────────────────────
       - name: Route key integrity (route_path() keys exist in routes_it_IT.json)

@@ -517,11 +517,15 @@ class ViafAuthorityPlugin
         $isniIdParam  = $isniRaw !== '' ? $isniRaw : null;
         $isniUriParam = $isniIdParam !== null ? 'https://isni.org/isni/' . $isniIdParam : null;
 
-        $stmt = $this->db->prepare('UPDATE autori SET isni_id = ?, isni_uri = ? WHERE id = ?');
+        $authSource     = $isniIdParam !== null ? 'isni' : null;
+        $authConfidence = $isniIdParam !== null ? 'exact' : null;
+        $stmt = $this->db->prepare(
+            'UPDATE autori SET isni_id = ?, isni_uri = ?, authority_source = ?, authority_confidence = ? WHERE id = ?'
+        );
         if ($stmt === false) {
             return $this->json($response, ['error' => true, 'message' => __('Errore interno.')], 500);
         }
-        $stmt->bind_param('ssi', $isniIdParam, $isniUriParam, $id);
+        $stmt->bind_param('ssssi', $isniIdParam, $isniUriParam, $authSource, $authConfidence, $id);
         $ok       = $stmt->execute();
         $affected = $stmt->affected_rows;
         $stmt->close();
@@ -642,6 +646,12 @@ class ViafAuthorityPlugin
         ServerRequestInterface $request,
         ResponseInterface $response
     ): ResponseInterface {
+        /** @var ResponseInterface|null $out */
+        $out = null;
+        if (!$this->requireAdminOrStaff($response, $out, $request)) {
+            return $out;
+        }
+
         $id = (int) ($request->getQueryParams()['id'] ?? 0);
         if ($id <= 0) {
             $response->getBody()->write('<p>Invalid ID</p>');

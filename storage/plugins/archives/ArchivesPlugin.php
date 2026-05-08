@@ -1654,6 +1654,7 @@ class ArchivesPlugin
             if ($stmt !== false) {
                 $stmt->bind_param('isssi', $id, $relPath, $mime, $clientName, $id);
                 $inserted = $stmt->execute();
+                $insertErr = $stmt->error;
                 $stmt->close();
                 if ($inserted) {
                     // Null out legacy single-document columns only after a confirmed
@@ -1666,6 +1667,16 @@ class ArchivesPlugin
                         $nullStmt->execute();
                         $nullStmt->close();
                     }
+                } else {
+                    $movedPath = $targetDirFs . '/' . $basename;
+                    if (is_file($movedPath)) {
+                        unlink($movedPath);
+                    }
+                    \App\Support\SecureLogger::error('[Archives] archival_unit_files INSERT failed', [
+                        'unit_id' => $id,
+                        'path'    => $relPath,
+                        'error'   => $insertErr,
+                    ]);
                 }
             }
         }
@@ -4145,7 +4156,7 @@ class ArchivesPlugin
                   LIMIT ?'
             );
             if ($stmt !== false) {
-                $stmt->bind_param('ssi', $q, $q, $remaining + count($seen));
+                $stmt->bind_param('ssi', $q, $q, $remaining);
                 $stmt->execute();
                 $result = $stmt->get_result();
                 if ($result instanceof \mysqli_result) {
@@ -4154,6 +4165,9 @@ class ArchivesPlugin
                         if (!isset($seen[$rid])) {
                             $rows[] = $r;
                             $seen[$rid] = true;
+                            if (count($rows) >= $limit) {
+                                break;
+                            }
                         }
                     }
                     $result->free();
@@ -5545,12 +5559,13 @@ class ArchivesPlugin
         // Pre-fetch all unit files in one query to avoid N+1 on collection export.
         $allUnitIds   = array_map(fn(array $r): int => (int) $r['id'], $rows);
         $allUnitFiles = $this->fetchUnitFilesForUnits($allUnitIds);
+        $allUnitFiles = array_replace(array_fill_keys($allUnitIds, []), $allUnitFiles);
 
         $xw->startElement('eadlist');
         $xw->writeAttribute('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance');
         foreach ($rows as $row) {
             $auth        = $this->fetchAuthoritiesForArchivalUnit((int) $row['id']);
-            $rowUnitFiles = $allUnitFiles[(int) $row['id']] ?? [];
+            $rowUnitFiles = $allUnitFiles[(int) $row['id']] ?? null;
             $this->writeEad3Document($xw, $row, $auth, $rowUnitFiles);
         }
         $xw->endElement(); // eadlist
@@ -5590,7 +5605,7 @@ class ArchivesPlugin
      *     Pre-fetched files for this unit; if empty the method fetches them itself.
      *     Pass a non-empty array to avoid N+1 queries in collection exports.
      */
-    private function writeEad3Document(\XMLWriter $xw, array $row, array $authorities, array $unitFiles = []): void
+    private function writeEad3Document(\XMLWriter $xw, array $row, array $authorities, ?array $unitFiles = null): void
     {
         $ns = 'http://ead3.archivists.org/schema/';
         $xw->startElementNs(null, 'ead', $ns);
@@ -5757,7 +5772,7 @@ class ArchivesPlugin
                 $xw->endElement(); // dao
             }
             // One <dao> per multi-document file in archival_unit_files.
-            $filesToEmit = !empty($unitFiles) ? $unitFiles : $this->fetchUnitFiles($unitId);
+            $filesToEmit = $unitFiles ?? $this->fetchUnitFiles($unitId);
             foreach ($filesToEmit as $uf) {
                 $fsPathDoc = __DIR__ . '/../../../public' . (string) $uf['file_path'];
                 if (!is_file($fsPathDoc)) {
@@ -6073,6 +6088,10 @@ class ArchivesPlugin
         }
         if ($until !== '' && !$validateOaiDate($until)) {
             $this->oaiError($xw, 'badArgument', 'Invalid until date. Use YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.');
+            return;
+        }
+        if ($from !== '' && $until !== '' && strlen($from) !== strlen($until)) {
+            $this->oaiError($xw, 'badArgument', 'from and until must use the same granularity (both YYYY-MM-DD or both YYYY-MM-DDThh:mm:ssZ).');
             return;
         }
 

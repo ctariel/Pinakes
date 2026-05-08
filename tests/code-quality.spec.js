@@ -164,13 +164,14 @@ test.describe.serial('Code Quality — 15 static analysis tests', () => {
 
     test('5. app/ PHP files querying FROM libri include deleted_at IS NULL', () => {
         // Match SELECT/JOIN data queries, not DDL like SHOW COLUMNS FROM libri
-        const FROM_LIBRI = /(?:SELECT|JOIN|,)\s[\s\S]{0,200}?FROM\s+`?libri`?\b(?!_)/i;
+        const FROM_LIBRI = /\bSELECT\b[\s\S]{0,200}?\bFROM\s+`?libri`?\b(?!_)/i;
+        const JOIN_LIBRI = /\b(?:LEFT\s+|INNER\s+|RIGHT\s+)?JOIN\s+`?libri`?\b(?!_)/i;
         const SOFT_DEL   = /deleted_at\s+IS\s+NULL/i;
         const violations = [];
 
         for (const file of glob('app', '.php', ['vendor'])) {
             const content = fs.readFileSync(file, 'utf-8');
-            if (FROM_LIBRI.test(content) && !SOFT_DEL.test(content)) {
+            if ((FROM_LIBRI.test(content) || JOIN_LIBRI.test(content)) && !SOFT_DEL.test(content)) {
                 violations.push(path.relative(ROOT, file));
             }
         }
@@ -263,11 +264,11 @@ test.describe.serial('Code Quality — 15 static analysis tests', () => {
 
         const DOC_RE   = /`GET (\/(?:api|resync|oai|openurl|archives)[^\s`{]+)/g;
         const violations = [];
+        const normalizedPhpSources = phpSources.replace(/\{([^}:]+):[^}]+\}/g, '{$1}');
         let m;
         while ((m = DOC_RE.exec(readme)) !== null) {
-            const rawPath = m[1].replace(/\/\{[^}]+\}/g, '/');  // strip {id} params
-            const search  = rawPath.replace(/\/$/, '');
-            if (!phpSources.includes(search)) violations.push(m[1]);
+            const search = m[1].replace(/\/$/, '');
+            if (!normalizedPhpSources.includes(search)) violations.push(m[1]);
         }
         expect(violations,
             `Endpoints documented in README but no matching route found in PHP:\n${violations.map(v => '  GET ' + v).join('\n')}`

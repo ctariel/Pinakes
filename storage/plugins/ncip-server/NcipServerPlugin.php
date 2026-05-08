@@ -395,7 +395,7 @@ class NcipServerPlugin
     private function requireAdmin(): bool
     {
         return isset($_SESSION['user']) &&
-            in_array($_SESSION['user']['tipo_utente'] ?? '', ['admin', 'staff'], true);
+            (($_SESSION['user']['tipo_utente'] ?? '') === 'admin');
     }
 
     /**
@@ -464,21 +464,27 @@ class NcipServerPlugin
         \SimpleXMLElement $xml
     ): ResponseInterface {
         // Extract ItemIdentifierValue
-        $ns     = self::NCIP_NS;
-        $itemId = (string) ($xml->children($ns)->LookupItem->ItemId->ItemIdentifierValue ?? '');
-        if ($itemId === '') {
+        $ns        = self::NCIP_NS;
+        $itemIdRaw = (string) ($xml->children($ns)->LookupItem->ItemId->ItemIdentifierValue ?? '');
+        if ($itemIdRaw === '') {
             return $this->xmlResponse(
                 $response,
                 $this->buildProblem('Missing ItemIdentifierValue', 'unknown-item')
             );
         }
 
-        $bookId = (int) $itemId;
+        $bookId = $this->parseNcipNumericId($itemIdRaw);
+        if ($bookId === null) {
+            return $this->xmlResponse(
+                $response,
+                $this->buildProblem("Invalid ItemIdentifierValue '{$itemIdRaw}'", 'unknown-item')
+            );
+        }
         $book   = $this->fetchBook($bookId);
         if ($book === null) {
             return $this->xmlResponse(
                 $response,
-                $this->buildProblem("Item '{$itemId}' not found", 'unknown-item')
+                $this->buildProblem("Item '{$itemIdRaw}' not found", 'unknown-item')
             );
         }
 
@@ -502,13 +508,31 @@ class NcipServerPlugin
             );
         }
 
-        $ns     = self::NCIP_NS;
-        $userId = (string) ($xml->children($ns)->LookupUser->UserId->UserIdentifierValue ?? '');
-        $user   = $this->fetchUser($userId !== '' ? (int) $userId : 0);
+        $ns         = self::NCIP_NS;
+        $userIdRaw  = (string) ($xml->children($ns)->LookupUser->UserId->UserIdentifierValue ?? '');
+        $targetId   = $userIdRaw !== '' ? $this->parseNcipNumericId($userIdRaw) : null;
+        if ($targetId === null) {
+            return $this->xmlResponse(
+                $response,
+                $this->buildProblem("Invalid or missing UserIdentifierValue", 'unknown-user')
+            );
+        }
+
+        // Authorization: patron can only look up themselves; staff/admin can look up anyone
+        $callerRole = (string) ($caller['tipo_utente'] ?? '');
+        $isPrivileged = in_array($callerRole, ['admin', 'staff'], true);
+        if (!$isPrivileged && (int) ($caller['id'] ?? 0) !== $targetId) {
+            return $this->xmlResponse(
+                $response->withStatus(403),
+                $this->buildProblem('Access denied', 'access-denied')
+            );
+        }
+
+        $user = $this->fetchUser($targetId);
         if ($user === null) {
             return $this->xmlResponse(
                 $response,
-                $this->buildProblem("User '{$userId}' not found", 'unknown-user')
+                $this->buildProblem("User '{$userIdRaw}' not found", 'unknown-user')
             );
         }
 
@@ -1250,7 +1274,15 @@ class NcipServerPlugin
         );
         if ($upd === false) { $this->db->rollback(); return; }
         $upd->bind_param('i', $bookId);
-        $upd->execute();
+        if (!$upd->execute() || $upd->affected_rows !== 1) {
+            \App\Support\SecureLogger::error('[NCIP] closeLoan: libri UPDATE failed or no row affected', [
+                'book_id' => $bookId,
+                'error'   => $upd->error,
+            ]);
+            $upd->close();
+            $this->db->rollback();
+            return;
+        }
         $upd->close();
         $this->db->commit();
     }

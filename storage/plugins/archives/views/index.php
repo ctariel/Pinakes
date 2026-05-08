@@ -40,8 +40,10 @@ foreach ($rows as $row) {
  * @param array<int, array<int, array<string, mixed>>> $byParent
  */
 $renderedIds = [];
+/** @var bool $isFiltered */
+$isFiltered  = false; // set after closure definition; captured by reference
 $renderRow = null;
-$renderRow = function (array $row, int $depth, array $visited = []) use (&$renderRow, &$renderedIds, $byParent, $e): string {
+$renderRow = function (array $row, int $depth, array $visited = []) use (&$renderRow, &$renderedIds, &$isFiltered, $byParent, $e): string {
     // Cycle guard: if a row's id has already been rendered in this branch,
     // stop recursing. Should never happen on sane data but parent_id is a
     // user-controlled column and a stray import could create loops.
@@ -95,10 +97,14 @@ $renderRow = function (array $row, int $depth, array $visited = []) use (&$rende
     $html .= '</td>';
     $html .= '</tr>';
 
-    // Recurse into children, if any.
-    $children = $byParent[$rowId] ?? [];
-    foreach ($children as $child) {
-        $html .= $renderRow($child, $depth + 1, $visited);
+    // Recurse into children, if any. In filtered mode the outer loop already
+    // iterates over every matching row, so we must not recurse into children
+    // here or they would appear indented under a parent AND again at depth=0.
+    if (!$isFiltered) {
+        $children = $byParent[$rowId] ?? [];
+        foreach ($children as $child) {
+            $html .= $renderRow($child, $depth + 1, $visited);
+        }
     }
     return $html;
 };

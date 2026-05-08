@@ -80,6 +80,15 @@ class SruClient
      */
     private function queryServerWithRetry(array $server, string $index, string $term): ?array
     {
+        // Elapsed-based rate limiter: max 1 request/second per server (static across instances)
+        static $lastRequest = [];
+        $serverKey = $server['url'] ?? 'unknown';
+        $now = microtime(true);
+        if (isset($lastRequest[$serverKey]) && ($now - $lastRequest[$serverKey]) < 1.0) {
+            usleep((int)((1.0 - ($now - $lastRequest[$serverKey])) * 1_000_000));
+        }
+        $lastRequest[$serverKey] = microtime(true);
+
         $lastException = null;
         $attempts = 0;
 
@@ -119,6 +128,11 @@ class SruClient
         // Validate URL
         if (!filter_var($url, FILTER_VALIDATE_URL)) {
             throw new \Exception("Invalid server URL: $url");
+        }
+
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            throw new \Exception("Unsupported URL scheme '$scheme': only HTTP/HTTPS allowed");
         }
 
         $version = $server['version'] ?? '1.1';
@@ -192,6 +206,7 @@ class SruClient
             curl_setopt_array($ch, [
                 CURLOPT_URL => $url,
                 CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+                CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT => $this->timeout,
                 CURLOPT_CONNECTTIMEOUT => 5,
@@ -208,6 +223,10 @@ class SruClient
             curl_close($ch);
 
             if ($response === false || !empty($error)) {
+                \App\Support\SecureLogger::error('[SruClient] cURL error', [
+                    'url'   => $url,
+                    'error' => $error,
+                ]);
                 throw new \Exception("Connection failed: $error");
             }
 

@@ -227,6 +227,6 @@ class RouteTranslator
      */
     public static function getStaticFallbackKeys(): array
     {
-        return array_keys(self::$fallbackRoutes);
+        return self::getAvailableKeys();
     }
 }

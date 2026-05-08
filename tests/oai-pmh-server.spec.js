@@ -134,9 +134,13 @@ test.describe.serial('OAI-PMH Server plugin — v0.7.0 (16 tests)', () => {
 
     test.afterAll(async () => {
         try {
+            // FK-safe: delete child rows first, then parents
+            dbExec(`DELETE FROM oai_deleted_records WHERE entity_type = 'book' AND entity_id IN (SELECT id FROM libri WHERE titolo LIKE 'E2E\\_OAI\\_%' ESCAPE '\\\\')`);
             dbExec(`DELETE FROM libri WHERE titolo LIKE 'E2E\\_OAI\\_%' ESCAPE '\\\\'`);
             dbExec(`DELETE FROM archival_units WHERE reference_code LIKE 'E2E\\_OAI\\_%' ESCAPE '\\\\'`);
-        } catch { /* best-effort */ }
+        } catch (error) {
+            console.error('[oai-pmh afterAll] cleanup error:', error);
+        }
         await context?.close();
     });
 
@@ -182,7 +186,7 @@ test.describe.serial('OAI-PMH Server plugin — v0.7.0 (16 tests)', () => {
         const oaiId = dbQuery(
             `SELECT oai_id FROM oai_deleted_records WHERE entity_type='book' AND entity_id=${tmpId}`
         );
-        expect(oaiId).toBe(`oai:pinakes:book:${tmpId}`);
+        expect(oaiId).toBe(`oai:${oaiHost}:book:${tmpId}`);
 
         // Cleanup.
         dbExec(`DELETE FROM libri WHERE id=${tmpId}`);

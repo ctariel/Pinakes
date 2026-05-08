@@ -121,6 +121,20 @@ CREATE TABLE IF NOT EXISTS autori_authority_link (
     CONSTRAINT fk_aal_authority FOREIGN KEY (authority_id) REFERENCES authority_records(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Add FK on autori_id (idempotent via KEY_COLUMN_USAGE check)
+SET @fk_aal_autori_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'autori_authority_link'
+      AND COLUMN_NAME = 'autori_id'
+      AND REFERENCED_TABLE_NAME = 'autori'
+);
+SET @sql = IF(@fk_aal_autori_exists = 0,
+    'ALTER TABLE autori_authority_link ADD CONSTRAINT fk_aal_autori FOREIGN KEY (autori_id) REFERENCES autori(id) ON DELETE CASCADE',
+    'SELECT 1'
+);
+PREPARE _st FROM @sql; EXECUTE _st; DEALLOCATE PREPARE _st;
+
 -- ─── Part 2: Idempotent column additions (for installs that had an older ────
 -- ensureSchema() snapshot without all columns)
 

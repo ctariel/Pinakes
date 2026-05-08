@@ -103,7 +103,7 @@ jobs:
             # Check each ERROR line individually — skip only known-idempotent ones
             while IFS= read -r line; do
               if echo "$line" | grep -qiE '^ERROR'; then
-                if echo "$line" | grep -qiE 'duplicate (column name|key|index)|table .* already exists|check constraint .* already exists|can.t drop|unknown column|column .* does not exist'; then
+                if echo "$line" | grep -qiE 'duplicate (column name|key|index)|table .* already exists|check constraint .* already exists|can.t drop'; then
                   echo "  ↳ idempotent: $line"
                 else
                   echo "  ✗ $line"

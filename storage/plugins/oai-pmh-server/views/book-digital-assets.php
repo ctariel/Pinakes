@@ -52,11 +52,19 @@ function oaiFormatBytes(int $bytes): string
             <?php foreach ($assets as $asset): ?>
                 <tr class="border-b border-teal-100 dark:border-teal-800/50" data-asset-id="<?= (int) $asset['id'] ?>">
                     <td class="py-2 pr-4 max-w-xs">
+                        <?php
+                        $assetScheme = strtolower((string) parse_url((string) $asset['url'], PHP_URL_SCHEME));
+                        $assetUrlSafe = in_array($assetScheme, ['http', 'https'], true);
+                        ?>
+                        <?php if ($assetUrlSafe): ?>
                         <a href="<?= HtmlHelper::e((string) $asset['url']) ?>" target="_blank"
                            rel="noopener noreferrer"
                            class="text-teal-700 dark:text-teal-300 hover:underline truncate block max-w-xs">
                             <?= HtmlHelper::e(basename((string) $asset['url'])) ?>
                         </a>
+                        <?php else: ?>
+                        <span class="text-gray-400 truncate block max-w-xs"><?= HtmlHelper::e(basename((string) $asset['url'])) ?></span>
+                        <?php endif; ?>
                     </td>
                     <td class="py-2 pr-4 font-mono text-xs"><?= HtmlHelper::e((string) $asset['filetype']) ?></td>
                     <td class="py-2 pr-4 text-gray-600 dark:text-gray-400">
@@ -274,7 +282,15 @@ function oaiFormatBytes(int $bytes): string
         var tdUrl = document.createElement('td');
         tdUrl.className = 'py-2 pr-4 max-w-xs';
         var link = document.createElement('a');
-        link.href = a.url;
+        const safeSchemes = ['http:', 'https:'];
+        try {
+            const parsedUrl = new URL(a.url);
+            if (safeSchemes.includes(parsedUrl.protocol)) {
+                link.href = a.url;
+            }
+        } catch (e) {
+            // invalid URL, leave href unset
+        }
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.className = 'text-teal-700 dark:text-teal-300 hover:underline truncate block max-w-xs';

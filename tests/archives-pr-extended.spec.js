@@ -122,6 +122,7 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
     let audioFileId  = 0;
     let videoFileId  = 0;
     let uploadedCoverPath = '';
+    let originalUploadedCoverPath = '';
     /** Stub files created on disk for IIIF manifest tests */
     let stubFilePaths = /** @type {string[]} */ ([]);
 
@@ -453,30 +454,27 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
             test.skip(true, 'No remove-asset form on page');
             return;
         }
-        page.once('dialog', (d) => d.accept());
+        await removeForm.locator('button[type="submit"]').click();
+        await page.waitForSelector('.swal2-confirm', { timeout: 5000 });
         await Promise.all([
             page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
-            removeForm.locator('button[type="submit"]').click(),
+            page.locator('.swal2-confirm').click(),
         ]);
 
         const pathAfter = dbQuery(
             `SELECT IFNULL(cover_image_path, 'NULL') FROM archival_units WHERE id = ${itemBId}`
         );
         expect(pathAfter).toBe('NULL');
+        originalUploadedCoverPath = uploadedCoverPath;
         uploadedCoverPath = '';
     });
 
     test('16. Cover file removed from disk after remove-asset POST', () => {
-        // uploadedCoverPath was cleared in test 15 only if removal succeeded.
-        // Either way, assert the file is gone from disk.
-        if (uploadedCoverPath) {
-            // Test 15 did NOT clear it — check directly
-            const abs = path.join(PUBLIC_DIR, uploadedCoverPath);
+        if (originalUploadedCoverPath) {
+            const abs = path.join(PUBLIC_DIR, originalUploadedCoverPath);
             expect(fs.existsSync(abs)).toBe(false);
         } else {
-            // Test 15 cleared uploadedCoverPath after successful removal — nothing more to check
-            // (the assertion was implicitly validated in test 15 via the DB column becoming NULL)
-            expect(true).toBe(true);
+            test.skip(true, 'No cover was uploaded in test 15');
         }
     });
 
@@ -502,11 +500,10 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
         const archiveHit = Array.isArray(hits)
             ? hits.find((h) => h.type === 'archive' || (h.url && h.url.includes('archiv')))
             : null;
-        if (archiveHit) {
-            // URL must not contain a hardcoded Italian-only prefix
-            expect(archiveHit.url).toBeTruthy();
-            expect(archiveHit.url).not.toContain('/archivio');
-        }
+        expect(archiveHit).toBeTruthy();
+        // URL must not contain a hardcoded Italian-only prefix
+        expect(archiveHit.url).toBeTruthy();
+        expect(archiveHit.url).not.toContain('/archivio');
     });
 
     test('19. Public /archivio/{id} (IT locale) returns 200', async ({ request }) => {

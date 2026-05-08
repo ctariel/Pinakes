@@ -35,6 +35,8 @@ const DB_USER      = process.env.E2E_DB_USER     || '';
 const DB_PASS      = process.env.E2E_DB_PASS     || '';
 const DB_NAME      = process.env.E2E_DB_NAME     || '';
 const DB_SOCKET    = process.env.E2E_DB_SOCKET   || '';
+const DB_HOST      = process.env.E2E_DB_HOST     || '';
+const DB_PORT      = process.env.E2E_DB_PORT     || '';
 const ADMIN_EMAIL  = process.env.E2E_ADMIN_EMAIL || '';
 const ADMIN_PASS   = process.env.E2E_ADMIN_PASS  || '';
 
@@ -42,7 +44,12 @@ const NCIP_NS = 'http://www.niso.org/2008/ncip';
 
 function mysqlArgs(sql, batch = false) {
     const args = [];
-    if (DB_SOCKET) args.push('-S', DB_SOCKET);
+    if (DB_SOCKET) {
+        args.push('-S', DB_SOCKET);
+    } else {
+        if (DB_HOST) args.push('-h', DB_HOST);
+        if (DB_PORT) args.push('-P', DB_PORT);
+    }
     args.push('-u', DB_USER, DB_NAME);
     if (batch) args.push('-N', '-B');
     if (sql !== '') args.push('-e', sql);
@@ -389,7 +396,13 @@ test.describe.serial('NCIP 2.0 Server plugin — v0.7.4 (20 tests)', () => {
         // Clean up any NCIP loans that survived (e.g. test 10/20 skipped or failed).
         try {
             if (testBookId > 0) {
-                dbExec(
+                // FK-safe: child table first (ncip_transactions → prestiti), then parent
+                dbQuery(
+                    `DELETE t FROM ncip_transactions t ` +
+                    `JOIN prestiti p ON p.id = t.prestito_id ` +
+                    `WHERE p.libro_id = ${testBookId} AND p.origine = 'ncip'`
+                );
+                dbQuery(
                     `DELETE FROM prestiti WHERE libro_id = ${testBookId} AND origine = 'ncip'`
                 );
             }

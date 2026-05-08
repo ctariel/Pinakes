@@ -243,6 +243,9 @@ test.describe.serial('MAG 2.0.1 metadata validation — v0.7.4 (18 tests)', () =
             const xmlTitle = match[1]
                 .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
                 .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+                .replace(/&#0*39;/g, "'").replace(/&#0*34;/g, '"')
+                .replace(/&#0*60;/g, '<').replace(/&#0*62;/g, '>')
+                .replace(/&#0*38;/g, '&')
                 .replace(/&amp;/g, '&').trim();
             expect(xmlTitle).toBe(testBookTitle);
         }

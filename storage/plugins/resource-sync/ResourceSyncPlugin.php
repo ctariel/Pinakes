@@ -68,27 +68,20 @@ class ResourceSyncPlugin
             SecureLogger::warning('[ResourceSync] pluginId not set; cannot register hook ' . $hookName);
             return;
         }
-        $del = $this->db->prepare(
-            'DELETE FROM plugin_hooks WHERE plugin_id = ? AND hook_name = ? AND callback_method = ?'
-        );
-        if ($del !== false) {
-            $del->bind_param('iss', $this->pluginId, $hookName, $method);
-            $del->execute();
-            $del->close();
-        }
+        $callbackClass = 'ResourceSyncPlugin';
         $stmt = $this->db->prepare(
             'INSERT INTO plugin_hooks (plugin_id, hook_name, callback_class, callback_method, priority, is_active, created_at)
-             VALUES (?, ?, ?, ?, ?, 1, NOW())'
+             VALUES (?, ?, ?, ?, ?, 1, NOW())
+             ON DUPLICATE KEY UPDATE priority = VALUES(priority), is_active = 1'
         );
         if ($stmt === false) {
             throw new \RuntimeException('[ResourceSync] prepare() failed for hook ' . $hookName . ': ' . $this->db->error);
         }
-        $callbackClass = 'ResourceSyncPlugin';
         $stmt->bind_param('isssi', $this->pluginId, $hookName, $callbackClass, $method, $priority);
         if (!$stmt->execute()) {
             $err = $stmt->error;
             $stmt->close();
-            throw new \RuntimeException('[ResourceSync] hook insert failed for ' . $hookName . ': ' . $err);
+            throw new \RuntimeException('[ResourceSync] hook upsert failed for ' . $hookName . ': ' . $err);
         }
         $stmt->close();
     }
@@ -176,10 +169,14 @@ class ResourceSyncPlugin
     ): ResponseInterface {
         $base   = $this->baseUrl();
         $params = $request->getQueryParams();
-        $since  = isset($params['from']) ? (string) $params['from'] : null;
-        $page   = max(0, (int) ($params['page'] ?? 0));
+        $sinceRaw = isset($params['from']) ? (string) $params['from'] : null;
+        $page     = max(0, (int) ($params['page'] ?? 0));
+        // Normalize $since so the XML from-attribute matches what the DB actually used
+        $since = ($sinceRaw !== null && preg_match('/^\d{4}-\d{2}-\d{2}(T[\d:]+Z?)?$/', $sinceRaw))
+            ? $sinceRaw
+            : null;
         $books  = $this->fetchChangedBooks($since, $page);
-        $xml    = $this->buildChangeList($base, $books, $since);
+        $xml    = $this->buildChangeList($base, $books, $since, $page);
         return $this->xmlResponse($response, $xml);
     }
 
@@ -337,7 +334,7 @@ class ResourceSyncPlugin
     /**
      * @param array<int, array<string, mixed>> $books
      */
-    private function buildChangeList(string $base, array $books, ?string $since): string
+    private function buildChangeList(string $base, array $books, ?string $since, int $page = 0): string
     {
         $xw = new \XMLWriter();
         $xw->openMemory();
@@ -360,6 +357,21 @@ class ResourceSyncPlugin
         $xw->writeAttribute('rel', 'up');
         $xw->writeAttribute('href', $base . '/resync/capabilitylist.xml');
         $xw->endElement();
+
+        // Pagination links: next/prev for harvesters
+        $sinceParam = $since !== null ? '&from=' . urlencode($since) : '';
+        if (count($books) === 500) {
+            $xw->startElementNs('rs', 'ln', null);
+            $xw->writeAttribute('rel', 'next');
+            $xw->writeAttribute('href', $base . '/resync/changelist.xml?page=' . ($page + 1) . $sinceParam);
+            $xw->endElement();
+        }
+        if ($page > 0) {
+            $xw->startElementNs('rs', 'ln', null);
+            $xw->writeAttribute('rel', 'prev');
+            $xw->writeAttribute('href', $base . '/resync/changelist.xml?page=' . ($page - 1) . $sinceParam);
+            $xw->endElement();
+        }
 
         foreach ($books as $book) {
             $id = (int) $book['id'];
@@ -443,13 +455,15 @@ class ResourceSyncPlugin
             $stmt = $this->db->prepare(
                 'SELECT id, updated_at, created_at, deleted_at, 0 AS is_new_entry
                  FROM libri
-                 WHERE deleted_at IS NULL
-                 ORDER BY updated_at DESC
-                 LIMIT 500'
+                 ORDER BY COALESCE(deleted_at, updated_at, created_at) DESC
+                 LIMIT ? OFFSET ?'
             );
             if ($stmt === false) {
                 return [];
             }
+            $limit  = 500;
+            $offset = max(0, $page) * 500;
+            $stmt->bind_param('ii', $limit, $offset);
         }
 
         $stmt->execute();

@@ -7,7 +7,8 @@
 -- files that are created at test-runtime.
 --
 -- Idempotent: uses INSERT IGNORE on archival_units and
--- INSERT INTO ... ON DUPLICATE KEY UPDATE on archival_unit_files.
+-- INSERT INTO ... SELECT ... WHERE NOT EXISTS (...) on archival_unit_files
+-- (no UNIQUE constraint on (unit_id, original_filename)).
 -- Safe to re-run; also safe to run after archives-feature-20.sql.
 --
 -- v1 (2026-05-07): initial version.

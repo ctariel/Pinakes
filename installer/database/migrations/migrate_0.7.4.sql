@@ -22,10 +22,14 @@ CREATE TABLE IF NOT EXISTS digital_assets (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Add FK on existing digital_assets table (upgrade path: table already created without FK).
+-- Check by column semantics (not constraint name) to handle fresh-install vs upgrade paths.
 SET @fk_exists = (
-    SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'digital_assets'
-      AND CONSTRAINT_NAME = 'fk_digital_assets_libro' AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'digital_assets'
+      AND COLUMN_NAME = 'libro_id'
+      AND REFERENCED_TABLE_NAME = 'libri'
+      AND REFERENCED_COLUMN_NAME = 'id'
 );
 SET @sql = IF(@fk_exists = 0,
     'ALTER TABLE digital_assets ADD CONSTRAINT fk_digital_assets_libro
