@@ -75,6 +75,7 @@ class OaiPmhServerPlugin
         $this->db->begin_transaction();
         try {
             $this->registerHookInDb('app.routes.register', 'registerRoutes', 10);
+            $this->registerHookInDb('book.form.fields', 'renderBookDigitalAssets', 20);
             $this->db->commit();
         } catch (\Throwable $e) {
             $this->db->rollback();
@@ -381,6 +382,23 @@ class OaiPmhServerPlugin
             array $args
         ) use ($plugin): ResponseInterface {
             return $plugin->downloadUnimarcMrcAction($request, $response, $args);
+        });
+
+        // Digital-assets AJAX endpoints — admin/staff only.
+        $app->post('/admin/api/books/{id}/digital-assets', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->digitalAssetAddAction($request, $response, $args);
+        });
+
+        $app->post('/admin/api/books/{id}/digital-assets/{aid}/delete', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->digitalAssetDeleteAction($request, $response, $args);
         });
     }
 
@@ -2524,5 +2542,182 @@ class OaiPmhServerPlugin
             . '   4500';
 
         return $leader . $directory . $fieldData . $RT;
+    }
+
+    // ── Digital-assets admin UI ───────────────────────────────────────────────
+
+    /**
+     * Hook: book.form.fields — injects MAG digital-assets section into book edit form.
+     *
+     * @param array<string,mixed>|null $book
+     * @param int|null                 $bookId
+     */
+    public function renderBookDigitalAssets(?array $book, ?int $bookId): void
+    {
+        if ($bookId === null) {
+            return;
+        }
+
+        $assets = [];
+        $stmt = $this->db->prepare(
+            'SELECT id, url, filetype, md5_hash, filesize, image_width, image_height, ppi
+               FROM digital_assets WHERE libro_id = ? ORDER BY id'
+        );
+        if ($stmt) {
+            $stmt->bind_param('i', $bookId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            while ($row = $result->fetch_assoc()) {
+                $assets[] = $row;
+            }
+            $stmt->close();
+        }
+
+        $csrfToken = \App\Support\Csrf::ensureToken();
+        include __DIR__ . '/views/book-digital-assets.php';
+    }
+
+    /**
+     * AJAX: POST /admin/api/books/{id}/digital-assets — add a digital asset.
+     *
+     * @param array<string,string> $args
+     */
+    public function digitalAssetAddAction(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        array $args
+    ): ResponseInterface {
+        if (!$this->requireAdminOrStaff()) {
+            return $this->jsonError($response, 'Unauthorized', 403);
+        }
+
+        $body  = (string) $request->getBody();
+        $data  = (array) (json_decode($body, true) ?? []);
+        $token = (string) ($data['csrf_token'] ?? '');
+        if (!\App\Support\Csrf::validate($token)) {
+            return $this->jsonError($response, 'Token CSRF non valido.');
+        }
+
+        $bookId = (int) ($args['id'] ?? 0);
+        if ($bookId <= 0) {
+            return $this->jsonError($response, 'ID libro non valido.');
+        }
+
+        $url      = trim((string) ($data['url'] ?? ''));
+        $filetype = trim((string) ($data['filetype'] ?? 'PDF'));
+        $md5      = trim((string) ($data['md5_hash'] ?? ''));
+        $filesize = max(0, (int) ($data['filesize'] ?? 0));
+        $width    = max(0, (int) ($data['image_width'] ?? 0));
+        $height   = max(0, (int) ($data['image_height'] ?? 0));
+        $ppi      = max(0, (int) ($data['ppi'] ?? 0));
+
+        if ($url === '') {
+            return $this->jsonError($response, 'URL obbligatorio.');
+        }
+        if (!filter_var($url, FILTER_VALIDATE_URL)) {
+            return $this->jsonError($response, 'URL non valido.');
+        }
+        $allowedTypes = ['PDF', 'TIFF', 'JPEG', 'PNG', 'EPUB'];
+        if (!in_array(strtoupper($filetype), $allowedTypes, true)) {
+            $filetype = 'PDF';
+        } else {
+            $filetype = strtoupper($filetype);
+        }
+        if ($md5 !== '' && !preg_match('/^[0-9a-f]{32}$/i', $md5)) {
+            return $this->jsonError($response, 'MD5 hash non valido (32 caratteri esadecimali).');
+        }
+
+        $stmt = $this->db->prepare(
+            'INSERT INTO digital_assets
+             (libro_id, url, filetype, md5_hash, filesize, image_width, image_height, ppi, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())'
+        );
+        if ($stmt === false) {
+            return $this->jsonError($response, 'Errore database.');
+        }
+        $stmt->bind_param('issssiis', $bookId, $url, $filetype, $md5, $filesize, $width, $height, $ppi);
+        if (!$stmt->execute()) {
+            $stmt->close();
+            return $this->jsonError($response, 'Errore nel salvataggio.');
+        }
+        $newId = (int) $this->db->insert_id;
+        $stmt->close();
+
+        return $this->jsonSuccess($response, [
+            'asset' => [
+                'id'           => $newId,
+                'url'          => $url,
+                'filetype'     => $filetype,
+                'md5_hash'     => $md5,
+                'filesize'     => $filesize,
+                'image_width'  => $width,
+                'image_height' => $height,
+                'ppi'          => $ppi,
+            ],
+        ]);
+    }
+
+    /**
+     * AJAX: POST /admin/api/books/{id}/digital-assets/{aid}/delete — delete a digital asset.
+     *
+     * @param array<string,string> $args
+     */
+    public function digitalAssetDeleteAction(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        array $args
+    ): ResponseInterface {
+        if (!$this->requireAdminOrStaff()) {
+            return $this->jsonError($response, 'Unauthorized', 403);
+        }
+
+        $body  = (string) $request->getBody();
+        $data  = (array) (json_decode($body, true) ?? []);
+        $token = (string) ($data['csrf_token'] ?? '');
+        if (!\App\Support\Csrf::validate($token)) {
+            return $this->jsonError($response, 'Token CSRF non valido.');
+        }
+
+        $bookId  = (int) ($args['id']  ?? 0);
+        $assetId = (int) ($args['aid'] ?? 0);
+        if ($bookId <= 0 || $assetId <= 0) {
+            return $this->jsonError($response, 'Parametri non validi.');
+        }
+
+        $stmt = $this->db->prepare(
+            'DELETE FROM digital_assets WHERE id = ? AND libro_id = ? LIMIT 1'
+        );
+        if ($stmt === false) {
+            return $this->jsonError($response, 'Errore database.');
+        }
+        $stmt->bind_param('ii', $assetId, $bookId);
+        if (!$stmt->execute()) {
+            $stmt->close();
+            return $this->jsonError($response, 'Errore nell\'eliminazione.');
+        }
+        $stmt->close();
+
+        return $this->jsonSuccess($response, []);
+    }
+
+    private function requireAdminOrStaff(): bool
+    {
+        return isset($_SESSION['user']) &&
+            in_array($_SESSION['user']['tipo_utente'] ?? '', ['admin', 'staff'], true);
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     */
+    private function jsonSuccess(ResponseInterface $response, array $data): ResponseInterface
+    {
+        $response->getBody()->write((string) json_encode(array_merge(['success' => true], $data)));
+        return $response->withHeader('Content-Type', 'application/json');
+    }
+
+    private function jsonError(ResponseInterface $response, string $error, int $status = 400): ResponseInterface
+    {
+        $response->getBody()->write((string) json_encode(['success' => false, 'error' => $error]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus($status);
     }
 }

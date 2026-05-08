@@ -187,6 +187,8 @@ storage/plugins/oai-pmh-server/*
 !storage/plugins/oai-pmh-server/*.php
 !storage/plugins/oai-pmh-server/*.json
 !storage/plugins/oai-pmh-server/*.md
+!storage/plugins/oai-pmh-server/views/
+!storage/plugins/oai-pmh-server/views/*.php
 
 !storage/plugins/viaf-authority/
 storage/plugins/viaf-authority/*
