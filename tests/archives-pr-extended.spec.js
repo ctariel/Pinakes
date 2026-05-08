@@ -116,7 +116,6 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
     let authPersonId = 0;
     let authCorpId   = 0;
     /** Cleanup paths */
-    let coverPath    = '';
     let audioFileId  = 0;
     let videoFileId  = 0;
     let uploadedCoverPath = '';
