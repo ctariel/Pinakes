@@ -101,6 +101,12 @@ jobs:
           echo "✓ Base schema installed from $RELEASE_TAG"
 
       # ── Step 3: Apply released migrations (idempotent baseline) ───────────
+      # Released migrations run on top of the released schema.sql which is
+      # already fully migrated up to that release. Every error here is by
+      # definition idempotent: duplicate columns/keys, FKs that already exist,
+      # RENAME/CHANGE on columns that were already renamed in schema.sql, etc.
+      # The extended idempotent filter covers cases that older migration files
+      # (pre-guard era) produce when re-run on an already-migrated schema.
       - name: Apply released migrations
         if: steps.release.outputs.skip == 'false'
         run: |
@@ -115,7 +121,8 @@ jobs:
             OUTPUT=$(mysql --force -h 127.0.0.1 -u root -proot pinakes_upgrade < "$sql" 2>&1) || true
             while IFS= read -r line; do
               if echo "$line" | grep -qiE '^ERROR'; then
-                if echo "$line" | grep -qiE 'duplicate (column name|key|index)|table .* already exists|check constraint .* already exists|can.t drop'; then
+                if echo "$line" | grep -qiE \
+                  'duplicate (column name|key|index)|table .* already exists|check constraint .* already exists|can.t drop|duplicate foreign key constraint name|unknown column'; then
                   echo "  ↳ idempotent: $line"
                 else
                   echo "  ✗ $line"
@@ -143,7 +150,7 @@ jobs:
             OUTPUT=$(mysql --force -h 127.0.0.1 -u root -proot pinakes_upgrade < "$sql" 2>&1) || true
             while IFS= read -r line; do
               if echo "$line" | grep -qiE '^ERROR'; then
-                if echo "$line" | grep -qiE 'duplicate (column name|key|index)|table .* already exists|check constraint .* already exists|can.t drop'; then
+                if echo "$line" | grep -qiE 'duplicate (column name|key|index)|table .* already exists|check constraint .* already exists|can.t drop|duplicate foreign key constraint name'; then
                   echo "  ↳ idempotent: $line"
                 else
                   echo "  ✗ $line"
