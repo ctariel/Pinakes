@@ -1814,10 +1814,13 @@ class OaiPmhServerPlugin
 
         // Try archival_unit pattern.
         if (preg_match('/^oai:(?:pinakes|' . preg_quote($host, '/') . '):archival_unit:(\d+)$/i', $identifier, $m)) {
-            $id  = (int) $m[1];
-            $res = $this->db->query(
-                "SELECT * FROM archival_units WHERE id = {$id} AND deleted_at IS NULL"
-            );
+            $id   = (int) $m[1];
+            $stmt = $this->db->prepare('SELECT * FROM archival_units WHERE id = ? AND deleted_at IS NULL');
+            if (!$stmt) { return null; }
+            $stmt->bind_param('i', $id);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $stmt->close();
             if (!($res instanceof \mysqli_result)) { return null; }
             $row = $res->fetch_assoc();
             $res->free();

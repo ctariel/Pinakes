@@ -367,6 +367,8 @@ SET @sql = IF(
     'SELECT 1'
 );
 PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+-- ^ Duplicates the ENUM change from migrate_0.7.3.sql for installs upgrading
+--   directly to 0.7.4 that skipped 0.7.3; the IF guard makes it idempotent.
 
 -- ─── Plugin registrations (idempotent via ON DUPLICATE KEY UPDATE) ────────────
 -- Included here so upgrades skipping intermediate 0.7.x migrations still register

@@ -63,6 +63,8 @@ class BibframeLinkedDataPlugin
         }
     }
 
+    public function onInstall(): void {}
+
     public function onDeactivate(): void
     {
         $this->deleteHooksFromDb();

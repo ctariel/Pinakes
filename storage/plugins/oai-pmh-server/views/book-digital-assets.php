@@ -275,6 +275,7 @@ function oaiFormatBytes(int $bytes): string
         var link = document.createElement('a');
         link.href = a.url;
         link.target = '_blank';
+        link.rel = 'noopener noreferrer';
         link.className = 'text-teal-700 dark:text-teal-300 hover:underline truncate block max-w-xs';
         link.textContent = a.url.split('/').pop() || a.url;
         tdUrl.appendChild(link);
