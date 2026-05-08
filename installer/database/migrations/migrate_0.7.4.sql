@@ -16,8 +16,23 @@ CREATE TABLE IF NOT EXISTS digital_assets (
     created_at   TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    INDEX idx_libro_id (libro_id)
+    INDEX idx_libro_id (libro_id),
+    CONSTRAINT fk_digital_assets_libro
+        FOREIGN KEY (libro_id) REFERENCES libri(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Add FK on existing digital_assets table (upgrade path: table already created without FK).
+SET @fk_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'digital_assets'
+      AND CONSTRAINT_NAME = 'fk_digital_assets_libro' AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+);
+SET @sql = IF(@fk_exists = 0,
+    'ALTER TABLE digital_assets ADD CONSTRAINT fk_digital_assets_libro
+     FOREIGN KEY (libro_id) REFERENCES libri(id) ON DELETE CASCADE',
+    'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- mag_project_config: align legacy/fresh schemas with OaiPmhServerPlugin.
 CREATE TABLE IF NOT EXISTS mag_project_config (

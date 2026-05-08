@@ -153,7 +153,7 @@ class SruClient
         // Parse XML
         $dom = new DOMDocument();
         libxml_use_internal_errors(true);
-        if (!$dom->loadXML($response)) {
+        if (!$dom->loadXML($response, LIBXML_NONET)) {
             $errors = libxml_get_errors();
             libxml_clear_errors();
             throw new \Exception("Invalid XML response from $url: " . ($errors[0]->message ?? 'Parse error'));

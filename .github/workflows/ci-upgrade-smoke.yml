@@ -229,7 +229,10 @@ jobs:
           check_col ncip_partners notes
           # v0.7.4 — digital_assets
           check_col digital_assets libro_id
-          check_col digital_assets file_url
+          check_col digital_assets url
+          check_col digital_assets md5_hash
+          check_col digital_assets filesize
+          check_col digital_assets filetype
 
           [ "$FAILED" -eq 0 ] || exit 1
 

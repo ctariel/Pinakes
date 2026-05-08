@@ -67,6 +67,11 @@ class ViafAuthorityPlugin
         }
     }
 
+    public function onInstall(): void
+    {
+        $this->ensureSchema();
+    }
+
     public function onDeactivate(): void
     {
         $this->deleteHooksFromDb();

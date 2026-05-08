@@ -158,7 +158,9 @@ class OaiPmhServerPlugin
                 created_at   TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at   TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (id),
-                INDEX idx_libro_id (libro_id)
+                INDEX idx_libro_id (libro_id),
+                CONSTRAINT fk_digital_assets_libro
+                    FOREIGN KEY (libro_id) REFERENCES libri(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         ];
 
@@ -2617,6 +2619,10 @@ class OaiPmhServerPlugin
         if (!filter_var($url, FILTER_VALIDATE_URL)) {
             return $this->jsonError($response, 'URL non valido.');
         }
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            return $this->jsonError($response, 'Solo URL http/https consentiti.');
+        }
         $allowedTypes = ['PDF', 'TIFF', 'JPEG', 'PNG', 'EPUB'];
         if (!in_array(strtoupper($filetype), $allowedTypes, true)) {
             $filetype = 'PDF';
@@ -2627,6 +2633,20 @@ class OaiPmhServerPlugin
             return $this->jsonError($response, 'MD5 hash non valido (32 caratteri esadecimali).');
         }
 
+        // Verify the book exists and is not soft-deleted.
+        $chk = $this->db->prepare('SELECT 1 FROM libri WHERE id = ? AND deleted_at IS NULL LIMIT 1');
+        if (!$chk) {
+            return $this->jsonError($response, 'Errore database.');
+        }
+        $chk->bind_param('i', $bookId);
+        $chk->execute();
+        $chk->store_result();
+        if ($chk->num_rows === 0) {
+            $chk->close();
+            return $this->jsonError($response, 'Libro non trovato.', 404);
+        }
+        $chk->close();
+
         $stmt = $this->db->prepare(
             'INSERT INTO digital_assets
              (libro_id, url, filetype, md5_hash, filesize, image_width, image_height, ppi, created_at, updated_at)
@@ -2635,7 +2655,7 @@ class OaiPmhServerPlugin
         if ($stmt === false) {
             return $this->jsonError($response, 'Errore database.');
         }
-        $stmt->bind_param('issssiis', $bookId, $url, $filetype, $md5, $filesize, $width, $height, $ppi);
+        $stmt->bind_param('issssiii', $bookId, $url, $filetype, $md5, $filesize, $width, $height, $ppi);
         if (!$stmt->execute()) {
             $stmt->close();
             return $this->jsonError($response, 'Errore nel salvataggio.');

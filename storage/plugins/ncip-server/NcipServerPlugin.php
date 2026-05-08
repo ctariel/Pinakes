@@ -424,7 +424,7 @@ class NcipServerPlugin
         }
 
         // Parse incoming NCIP XML
-        $xml = @simplexml_load_string($body, \SimpleXMLElement::class, LIBXML_NOERROR);
+        $xml = @simplexml_load_string($body, \SimpleXMLElement::class, LIBXML_NOERROR | LIBXML_NONET);
         if ($xml === false) {
             return $this->xmlResponse(
                 $response->withStatus(400),
