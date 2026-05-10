@@ -60,6 +60,25 @@ $htmlLang = substr($currentLocale, 0, 2);
   <?php
   // Hook: Allow plugins to enqueue assets in the head (e.g., CSS, fonts, meta tags)
   do_action('assets.head');
+
+  if (!empty($headLinks) && is_array($headLinks)) {
+    foreach ($headLinks as $hl) {
+      if (!is_array($hl)) { continue; }
+      $out = '<link';
+      foreach (['rel', 'type', 'title', 'href'] as $attr) {
+        if (!empty($hl[$attr])) {
+          $val = (string) $hl[$attr];
+          if ($attr === 'href') {
+            $sanitized = filter_var($val, FILTER_SANITIZE_URL);
+            if ($sanitized === false || !preg_match('#^(https?://|/)#i', $sanitized)) { continue; }
+            $val = $sanitized;
+          }
+          $out .= ' ' . $attr . '="' . htmlspecialchars($val, ENT_QUOTES, 'UTF-8') . '"';
+        }
+      }
+      echo $out . ">\n";
+    }
+  }
   ?>
 
   <style>
@@ -895,6 +914,13 @@ $htmlLang = substr($currentLocale, 0, 2);
                       iconClass = 'fas fa-building';
                       iconColor = 'text-orange-500';
                       break;
+                    case 'archive':
+                      iconClass = 'fas fa-archive';
+                      iconColor = 'text-green-600';
+                      if (item.identifier) {
+                        identifierHtml = `<div class="text-xs text-gray-500 dark:text-gray-400 font-mono mt-0.5">${escapeHtml(String(item.identifier))}</div>`;
+                      }
+                      break;
                     case 'user':
                       iconClass = 'fas fa-user';
                       iconColor = 'text-pink-500';
@@ -1134,6 +1160,13 @@ $htmlLang = substr($currentLocale, 0, 2);
                     case 'publisher':
                       iconClass = 'fas fa-building';
                       iconColor = 'text-orange-500';
+                      break;
+                    case 'archive':
+                      iconClass = 'fas fa-archive';
+                      iconColor = 'text-green-600';
+                      if (item.identifier) {
+                        identifierHtml = `<div class="text-xs text-gray-500 font-mono mt-0.5">${escapeHtml(String(item.identifier))}</div>`;
+                      }
                       break;
                     case 'user':
                       iconClass = 'fas fa-user';
