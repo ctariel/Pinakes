@@ -11,10 +11,8 @@ parameters:
 			identifier: isset.offset
 			count: 1
 			path: app/Models/BookRepository.php
-
 		-
 			message: '#^Offset ''illustratore'' on array.*in isset\(\) does not exist\.$#'
 			identifier: isset.offset
 			count: 1
 			path: app/Models/BookRepository.php
-

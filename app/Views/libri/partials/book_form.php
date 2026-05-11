@@ -934,7 +934,7 @@ $selectedSeriesType = \App\Support\SeriesLabels::canonical($book['tipo_collana']
                           class="w-4 h-4 rounded border-gray-300 text-gray-900 focus:ring-gray-500"
                           <?= isset($ltFieldsVisibility[$fieldName]) && $ltFieldsVisibility[$fieldName] ? 'checked' : '' ?>
                         >
-                        <span class="text-gray-700"><?= HtmlHelper::e($ltFields[$fieldName]) ?></span>
+                        <span class="text-gray-700"><?= HtmlHelper::e(__($ltFields[$fieldName])) ?></span>
                       </label>
                     <?php endif; ?>
                   <?php endforeach; ?>

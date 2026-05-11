@@ -195,10 +195,12 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
             for (const relPath of allFilePaths) {
                 const absPath = path.join(PUBLIC_DIR, relPath.trim());
                 const dir = path.dirname(absPath);
-                if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-                if (!fs.existsSync(absPath)) {
-                    fs.writeFileSync(absPath, Buffer.from('stub'));
+                fs.mkdirSync(dir, { recursive: true });
+                try {
+                    fs.writeFileSync(absPath, Buffer.from('stub'), { flag: 'wx' });
                     stubFilePaths.push(absPath);
+                } catch (err) {
+                    if (!err || err.code !== 'EEXIST') throw err;
                 }
             }
         }

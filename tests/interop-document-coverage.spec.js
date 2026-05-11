@@ -168,8 +168,8 @@ test.describe.serial('Interop document coverage - 50 tests', () => {
     expect(migration).toContain('author_authority_alternates');
   });
 
-  test('21. 0.7.3 migration creates NCIP schema, not only plugin metadata', async () => {
-    const migration = read('installer/database/migrations/migrate_0.7.3.sql');
+  test('21. 0.7.4 migration carries NCIP schema fallback, not only plugin metadata', async () => {
+    const migration = read('installer/database/migrations/migrate_0.7.4.sql');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS ncip_partners');
     expect(migration).toContain('ncip_request_id');
   });

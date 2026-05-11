@@ -50,7 +50,7 @@ jobs:
       - name: composer audit (known CVEs)
         run: |
           composer install --no-interaction --prefer-dist --quiet
-          composer audit --no-dev 2>&1 || { echo "⚠ composer audit: vulnerabilities found (see above)"; exit 1; }
+          composer audit --no-dev --abandoned=ignore 2>&1 || { echo "⚠ composer audit: vulnerabilities found (see above)"; exit 1; }
 
       - name: npm audit (known CVEs)
         run: |

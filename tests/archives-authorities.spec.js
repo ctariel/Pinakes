@@ -229,7 +229,7 @@ test.describe.serial('Archives authorities CRUD + linking (#103 phase 2)', () =>
     test('9. Soft-delete the authority', async () => {
         const authId = dbQuery(`SELECT id FROM authority_records WHERE authorised_form = '${AUTH_NAME_UPDATED}' AND deleted_at IS NULL`);
         await page.goto(`${BASE}/admin/archives/authorities/${authId}`);
-        await page.click('button:has-text("Elimina"), button:has-text("Delete")');
+        await page.locator(`form[action$="/admin/archives/authorities/${authId}/delete"] button`).click();
         await page.locator('.swal2-confirm').click();
         await page.waitForURL(/\/admin\/archives\/authorities$/, { timeout: 10000 });
 
