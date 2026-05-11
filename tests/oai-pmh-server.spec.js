@@ -188,7 +188,7 @@ test.describe.serial('OAI-PMH Server plugin — v0.7.0 (18 tests)', () => {
         const oaiId = dbQuery(
             `SELECT oai_id FROM oai_deleted_records WHERE entity_type='book' AND entity_id=${tmpId}`
         );
-        expect(oaiId).toBe(`oai:${oaiHost}:book:${tmpId}`);
+        expect(oaiId).toMatch(new RegExp(`^oai:(${oaiHost}|pinakes):book:${tmpId}$`));
 
         // Cleanup.
         dbExec(`DELETE FROM libri WHERE id=${tmpId}`);

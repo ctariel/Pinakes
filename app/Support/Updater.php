@@ -2204,6 +2204,12 @@ class Updater
      */
     private function copyDirectoryRecursive(string $source, string $dest): void
     {
+        // Normalize to forward slashes so the code works on Windows too
+        // (PHP accepts '/' on all platforms; backslash paths from getPathname()
+        // would otherwise break the str_replace prefix-stripping below).
+        $source = rtrim(str_replace('\\', '/', $source), '/');
+        $dest   = rtrim(str_replace('\\', '/', $dest), '/');
+
         if (!is_dir($dest)) {
             if (!@mkdir($dest, 0755, true) && !is_dir($dest)) {
                 throw new Exception(sprintf(__('Impossibile creare directory: %s'), $dest));
@@ -2211,6 +2217,9 @@ class Updater
         }
 
         $realDest = realpath($dest);
+        if ($realDest !== false) {
+            $realDest = str_replace('\\', '/', $realDest);
+        }
 
         $iterator = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS),
@@ -2218,7 +2227,7 @@ class Updater
         );
 
         foreach ($iterator as $item) {
-            $relativePath = str_replace($source . '/', '', $item->getPathname());
+            $relativePath = str_replace($source . '/', '', str_replace('\\', '/', $item->getPathname()));
 
             // Security: reject path traversal and null bytes
             if (str_contains($relativePath, '..') || str_contains($relativePath, "\0")) {
@@ -2235,8 +2244,11 @@ class Updater
             // Security: verify target stays within dest
             if ($realDest !== false) {
                 $parentTarget = realpath(dirname($targetPath));
-                if ($parentTarget !== false && strpos($parentTarget, $realDest) !== 0) {
-                    throw new Exception(sprintf(__('Percorso non valido nel pacchetto: %s'), $relativePath));
+                if ($parentTarget !== false) {
+                    $parentTarget = str_replace('\\', '/', $parentTarget);
+                    if (strpos($parentTarget, $realDest) !== 0) {
+                        throw new Exception(sprintf(__('Percorso non valido nel pacchetto: %s'), $relativePath));
+                    }
                 }
             }
 
@@ -2253,7 +2265,7 @@ class Updater
                         throw new Exception(sprintf(__('Impossibile creare directory: %s'), dirname($relativePath)));
                     }
                 }
-                if (!copy($item->getPathname(), $targetPath)) {
+                if (!copy(str_replace('\\', '/', $item->getPathname()), $targetPath)) {
                     throw new Exception(sprintf(__('Errore nella copia del file: %s'), $relativePath));
                 }
             }
@@ -2579,13 +2591,17 @@ class Updater
      */
     private function copyDirectory(string $source, string $dest): void
     {
+        // Normalize to forward slashes for Windows compatibility
+        $source = rtrim(str_replace('\\', '/', $source), '/');
+        $dest   = rtrim(str_replace('\\', '/', $dest), '/');
+
         $iterator = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS),
             \RecursiveIteratorIterator::SELF_FIRST
         );
 
         foreach ($iterator as $item) {
-            $relativePath = str_replace($source . '/', '', $item->getPathname());
+            $relativePath = str_replace($source . '/', '', str_replace('\\', '/', $item->getPathname()));
 
             if (str_contains($relativePath, '..') || str_contains($relativePath, "\0")) {
                 throw new Exception(sprintf(__('Percorso non valido nel pacchetto: %s'), $relativePath));
@@ -2598,7 +2614,13 @@ class Updater
             $targetPath = $dest . '/' . $relativePath;
 
             $realDest = realpath($dest);
+            if ($realDest !== false) {
+                $realDest = str_replace('\\', '/', $realDest);
+            }
             $parentTarget = realpath(dirname($targetPath));
+            if ($parentTarget !== false) {
+                $parentTarget = str_replace('\\', '/', $parentTarget);
+            }
             if ($parentTarget !== false && $realDest !== false && strpos($parentTarget, $realDest) !== 0) {
                 throw new Exception(sprintf(__('Percorso non valido nel pacchetto: %s'), $relativePath));
             }
@@ -2628,7 +2650,7 @@ class Updater
                         throw new Exception(sprintf(__('Impossibile creare directory: %s'), dirname($relativePath)));
                     }
                 }
-                if (!copy($item->getPathname(), $targetPath)) {
+                if (!copy(str_replace('\\', '/', $item->getPathname()), $targetPath)) {
                     throw new Exception(sprintf(__('Errore nella copia del file: %s'), $relativePath));
                 }
             }

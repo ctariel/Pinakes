@@ -15,6 +15,7 @@ const DB_USER = process.env.E2E_DB_USER || '';
 const DB_PASS = process.env.E2E_DB_PASS || '';
 const DB_SOCKET = process.env.E2E_DB_SOCKET || '';
 const DB_NAME = process.env.E2E_DB_NAME || '';
+let mailpitAvailable = true;
 
 // Skip all tests when credentials are not configured
 test.skip(
@@ -60,6 +61,7 @@ async function mailpitJson(urlPath, timeoutMs = 5000) {
 
 /** Delete all messages in Mailpit */
 async function clearMailpit() {
+  if (!mailpitAvailable) return;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
@@ -73,6 +75,7 @@ async function clearMailpit() {
       try { await fetch(`${MAILPIT_API}/messages`, { method: 'DELETE', signal: retryCtrl.signal }); } catch { /* best effort */ } finally { clearTimeout(retryTimer); }
       return;
     }
+    mailpitAvailable = false;
     throw err;
   } finally {
     clearTimeout(timer);
@@ -195,6 +198,14 @@ test.describe.serial('Email Notifications E2E', () => {
 
   test.beforeAll(async ({ browser }) => {
     browserRef = browser;
+
+    try {
+      const res = await fetch(`${MAILPIT_API}/messages`, { signal: AbortSignal.timeout(3000) });
+      mailpitAvailable = res.ok;
+    } catch {
+      mailpitAvailable = false;
+    }
+    test.skip(!mailpitAvailable, `Mailpit is not reachable at ${MAILPIT_API}`);
 
     // Clear rate limit state from previous test runs
     clearRateLimits();

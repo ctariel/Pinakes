@@ -230,7 +230,7 @@ test.describe.serial('Smoke: clean install + core operations', () => {
 
     // Create author inline via Choices.js
     // Target the author search input specifically (not the publisher one)
-    const authorInput = page.locator('.choices__input--cloned[aria-label*="autori"]');
+    const authorInput = page.locator('#autori_select').locator('xpath=following-sibling::div[contains(@class, "choices")]//input[contains(@class, "choices__input--cloned")]');
     await authorInput.fill(AUTHOR_NAME);
     await authorInput.press('Enter');
 

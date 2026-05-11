@@ -61,7 +61,6 @@ function readFile(filePath) {
 
 const LOCALES      = ['it_IT', 'en_US', 'de_DE', 'fr_FR'];
 const ROUTE_FILES  = LOCALES.map(l => path.join(ROOT, 'locale', `routes_${l}.json`));
-const SEED_FILES   = LOCALES.map(l => path.join(ROOT, 'installer', 'database', `data_${l}.sql`));
 const MIGRATION    = path.join(ROOT, 'installer', 'database', 'migrations', 'migrate_0.7.4.sql');
 const INSTALLER_PHP = path.join(ROOT, 'installer', 'classes', 'Installer.php');
 const STEP0_PHP    = path.join(ROOT, 'installer', 'steps', 'step0.php');

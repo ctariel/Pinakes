@@ -50,6 +50,21 @@ const TEST_COVER = '/tmp/archive-test-cover.jpg';
 const TEST_PDF = '/tmp/archive-test.pdf';
 const TEST_AUDIO = '/tmp/archive-test-audio.mp3';
 
+function ensureUploadFixtures() {
+    if (!fs.existsSync(TEST_COVER)) {
+        fs.writeFileSync(TEST_COVER, Buffer.from(
+            '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAqf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/Aaf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/Aaf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAY/Al//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/IV//2gAMAwEAAgADAAAAEP/EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8QH//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8QH//EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEAAT8QH//Z',
+            'base64'
+        ));
+    }
+    if (!fs.existsSync(TEST_PDF)) {
+        fs.writeFileSync(TEST_PDF, '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n');
+    }
+    if (!fs.existsSync(TEST_AUDIO)) {
+        fs.writeFileSync(TEST_AUDIO, Buffer.from([0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]));
+    }
+}
+
 test.describe.serial('Archives — upload cover / PDF / audio end-to-end', () => {
     /** @type {import('@playwright/test').BrowserContext} */
     let context;
@@ -64,6 +79,7 @@ test.describe.serial('Archives — upload cover / PDF / audio end-to-end', () =>
     const ids = { pdf: 0, audio: 0, coverOnly: 0 };
 
     test.beforeAll(async ({ browser }) => {
+        ensureUploadFixtures();
         // Fixture-file sanity check — a dev that skipped the
         // ffmpeg/pdf generation step will otherwise see a confusing
         // 'input file not found' from Playwright's setInputFiles.

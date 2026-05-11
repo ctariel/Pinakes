@@ -128,6 +128,12 @@ test.describe.serial('Bulk Enrichment', () => {
     await page.click('button[type="submit"]');
     await page.waitForURL(/\/admin\//, { timeout: 15000 });
 
+    // Pre-clean stale rows from interrupted runs before inserting fixed real
+    // ISBN fixtures. The ISBN columns are unique, so an old ENRICH_* row can
+    // poison the next full-suite run before this suite reaches afterAll.
+    dbExec("UPDATE libri SET isbn13 = NULL, isbn10 = NULL, ean = NULL WHERE titolo LIKE 'ENRICH\\_%'");
+    dbExec("DELETE FROM libri WHERE titolo LIKE 'ENRICH\\_%'");
+
     // Seed 5 test books with ISBNs but NO cover and NO description
     const isbns = [ISBN_MOCKINGBIRD, ISBN_1984, ISBN_GATSBY, ISBN_CATCHER, ISBN_HOBBIT];
     for (let i = 0; i < isbns.length; i++) {

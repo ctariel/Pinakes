@@ -120,7 +120,15 @@ test.describe.serial('Archives interoperability standards (25 tests)', () => {
             if (await btn.isVisible({ timeout: 3000 }).catch(() => false)) {
                 await btn.click();
                 const confirm = page.locator('.swal2-confirm').first();
-                if (await confirm.isVisible({ timeout: 5000 }).catch(() => false)) await confirm.click();
+                if (await confirm.isVisible({ timeout: 5000 }).catch(() => false)) {
+                    await Promise.all([
+                        page.waitForResponse(r =>
+                            new RegExp(`/admin/plugins/${archivesId}/activate$`).test(r.url()) &&
+                            r.request().method() === 'POST',
+                            { timeout: 15000 }),
+                        confirm.click(),
+                    ]);
+                }
                 await page.waitForLoadState('domcontentloaded');
             }
         }
@@ -427,12 +435,9 @@ test.describe.serial('Archives interoperability standards (25 tests)', () => {
     test('25. admin edit form shows ISAD(G) area labels and ARK field', async () => {
         await page.goto(`${BASE}/admin/archives/${fondsId}/edit`);
         await page.waitForLoadState('domcontentloaded');
-        // Area 1 — Identity Statement
-        await expect(page.getByText('Identity Statement', { exact: false })).toBeVisible();
-        // Area 3 — Content & Structure
-        await expect(page.getByText('Content & Structure', { exact: false })).toBeVisible();
-        // Area 4 — Conditions of Access & Use
-        await expect(page.getByText('Conditions of Access', { exact: false })).toBeVisible();
+        await expect(page.getByRole('heading', { name: /ISAD\(G\) 3\.1/ })).toBeVisible();
+        await expect(page.getByRole('heading', { name: /ISAD\(G\) 3\.3/ })).toBeVisible();
+        await expect(page.getByRole('heading', { name: /ISAD\(G\) 3\.4/ })).toBeVisible();
         // New fields — verify inputs are present
         await expect(page.locator('input[name="ark_identifier"]')).toBeVisible();
         await expect(page.locator('input[name="rights_statement_url"]')).toBeVisible();

@@ -181,14 +181,14 @@ test.describe.serial('Archives search bar — admin + public (25 tests)', () => 
 
     test('10 · Admin: pulsante "Azzera" resetta la vista ad albero', async () => {
         await page.goto(`${BASE}/admin/archives?q=E2E&level=fonds`);
-        await page.click('a:text("Azzera")');
+        await page.locator('form a[href$="/admin/archives"]').click();
         await page.waitForURL(`${BASE}/admin/archives`, { timeout: 5_000 });
         await expect(page.locator(`a[href*="/admin/archives/${fondsId}"]`).first()).toBeVisible();
     });
 
     test('11 · Admin: no-results mostra messaggio "Nessun risultato"', async () => {
         await page.goto(`${BASE}/admin/archives?q=QUESTO_NON_ESISTE_XYZ123`);
-        await expect(page.locator('text=Nessun risultato')).toBeVisible();
+        await expect(page.getByText(/Nessun risultato|Aucun résultat|No results/i).first()).toBeVisible();
     });
 
     test('12 · Admin: in search mode la lista è piatta (no indent gerarchico)', async () => {
@@ -275,8 +275,8 @@ test.describe.serial('Archives search bar — admin + public (25 tests)', () => 
 
     test('24 · Pubblico: pulsante × resetta al catalogo radice', async () => {
         await page.goto(`${BASE}/archivio?q=E2E`);
-        await page.locator('a[href$="/archivio"]').first().click();
-        await page.waitForURL(`${BASE}/archivio`, { timeout: 5_000 });
+        await page.locator('.archive-search-form a[href$="/archivio"], .archive-search-form a[href$="/archive"]').click();
+        await expect(page).toHaveURL(/\/(?:archivio|archive)$/, { timeout: 5_000 });
         await expect(page.locator('.archive-search-form input[name="q"]')).toHaveValue('');
     });
 
@@ -306,7 +306,7 @@ test.describe.serial('Archives search bar — admin + public (25 tests)', () => 
         await page.waitForTimeout(200);
         const container = page.locator('.search-form.d-none.d-md-block .search-results');
         await expect(container).toBeVisible();
-        await expect(container.locator('h6', { hasText: 'Archivio' })).toBeVisible();
+        await expect(container.locator('h6', { hasText: /Archivio|Archive/ })).toBeVisible();
         await expect(container.locator('.archive-result', { hasText: 'Archivio disegni seed autonomo' })).toBeVisible();
         await expect(container.locator('text=E2E_ARCHIVE_020')).toBeVisible();
     });

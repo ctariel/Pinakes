@@ -32,6 +32,7 @@ const DB_HOST    = process.env.E2E_DB_HOST     || '';
 const DB_PORT    = process.env.E2E_DB_PORT     || '';
 const DB_SOCKET  = process.env.E2E_DB_SOCKET   || '';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const SEED_SQL   = path.join(__dirname, 'seeds/archives-unit-files.sql');
 
 // Guard: skip entire file if E2E credentials are missing
 test.skip(!ADMIN_EMAIL || !ADMIN_PASS || !DB_USER || !DB_NAME, 'E2E credentials not configured');
@@ -58,6 +59,12 @@ function dbQuery(sql) {
 function dbExec(sql) {
     execFileSync('mysql', mysqlArgs(sql), {
         encoding: 'utf-8', timeout: 10000,
+        env: { ...process.env, MYSQL_PWD: DB_PASS },
+    });
+}
+function dbPipe(sql) {
+    execFileSync('mysql', mysqlArgs(), {
+        input: sql, encoding: 'utf-8', timeout: 60000,
         env: { ...process.env, MYSQL_PWD: DB_PASS },
     });
 }
@@ -149,6 +156,11 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
                 page.click('button[type="submit"]'),
             ]);
         }
+
+        // This file may run after archives-multi-documents.spec.js, whose
+        // cleanup removes the shared seed rows. Re-apply the idempotent seed
+        // here so the file is standalone and order-independent.
+        dbPipe(fs.readFileSync(SEED_SQL, 'utf8'));
 
         // Resolve seeded unit IDs
         fondsId = parseInt(dbQuery(
@@ -378,18 +390,21 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
     });
 
     test('10. Admin show page shows migration banner for unit still holding legacy document_path', async () => {
-        test.skip(fondsId === 0, 'Fonds not seeded');
+        test.skip(itemBId === 0, 'Item B not seeded');
 
-        // Set legacy on the fonds temporarily
+        // The legacy banner is only shown when the unit does not already have
+        // archival_unit_files rows. Use Item B, which is the seed's empty-file
+        // fixture, instead of the fonds fixture that intentionally has PDFs.
+        dbExec(`DELETE FROM archival_unit_files WHERE unit_id = ${itemBId}`);
         dbExec(
             `UPDATE archival_units
              SET document_path = '/uploads/archives/legacy-fonds.pdf',
                  document_mime = 'application/pdf',
                  document_filename = 'legacy-fonds.pdf'
-             WHERE id = ${fondsId} AND deleted_at IS NULL`
+             WHERE id = ${itemBId} AND deleted_at IS NULL`
         );
 
-        await page.goto(`${BASE}/admin/archives/${fondsId}`);
+        await page.goto(`${BASE}/admin/archives/${itemBId}`);
         await page.waitForLoadState('domcontentloaded');
         const body = await page.locator('body').textContent();
 
@@ -397,7 +412,7 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
         dbExec(
             `UPDATE archival_units
              SET document_path = NULL, document_mime = NULL, document_filename = NULL
-             WHERE id = ${fondsId}`
+             WHERE id = ${itemBId}`
         );
 
         // The migration banner text is "Documento precedente"
@@ -483,11 +498,10 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
             test.skip(true, 'No remove-asset form on page');
             return;
         }
-        await removeForm.locator('button[type="submit"]').click();
-        await page.waitForSelector('.swal2-confirm', { timeout: 5000 });
+        page.once('dialog', dialog => dialog.accept());
         await Promise.all([
             page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
-            page.locator('.swal2-confirm').click(),
+            removeForm.locator('button[type="submit"]').click(),
         ]);
 
         const pathAfter = dbQuery(
@@ -509,9 +523,9 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
 
     // ── Group D (17-20): Route fallback /archive (not /archivio) ─────────────
 
-    test('17. Admin unified search for archive keyword returns results', async ({ request }) => {
+    test('17. Admin unified search for archive keyword returns results', async () => {
         test.skip(fondsId === 0, 'No fonds to search');
-        const res = await request.get(
+        const res = await ctx.request.get(
             `${BASE}/admin/archives/search?q=E2E`,
             { headers: { 'Accept': 'text/html' } }
         );
@@ -522,6 +536,7 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
 
     test('18. Public unified search API returns archive hit with correct URL (not /archivio hardcoded)', async ({ request }) => {
         test.skip(fondsId === 0, 'No fonds to search');
+        await request.get(`${BASE}/language/fr_FR`, { maxRedirects: 5 });
         const res = await request.get(`${BASE}/api/search/unified?q=E2E_FILE`);
         expect(res.status()).toBe(200);
         const json = await res.json();
@@ -530,8 +545,10 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
             ? hits.find((h) => h.type === 'archive' || (h.url && h.url.includes('archiv')))
             : null;
         expect(archiveHit).toBeTruthy();
-        // URL must not contain a hardcoded Italian-only prefix
+        // In a French session, the archive route is /archive. This catches
+        // regressions where unified search hardcodes the Italian /archivio.
         expect(archiveHit.url).toBeTruthy();
+        expect(archiveHit.url).toContain('/archive');
         expect(archiveHit.url).not.toContain('/archivio');
     });
 
@@ -607,10 +624,9 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
         test.skip(fondsId === 0, 'No archives to display');
         await page.goto(`${BASE}/admin/archives`);
         await page.waitForLoadState('domcontentloaded');
-        // The "modifica" text should appear (Italian translation of the link)
-        const editLink = page.locator('a[href*="/edit"]').first();
+        const editLink = page.locator('main a[href*="/admin/archives/"][href$="/edit"]').first();
         const text = await editLink.textContent();
-        expect(text?.trim().toLowerCase()).toMatch(/modifica|edit/);
+        expect(text?.trim().toLowerCase()).toMatch(/modifica|edit|modifier/);
     });
 
     // ── Group F (27-29): Authority show view improvements ────────────────────
@@ -619,7 +635,7 @@ test.describe.serial('Archives PR extended — v0.7.4 (35 tests)', () => {
         test.skip(authPersonId === 0, 'No person authority in DB');
         await page.goto(`${BASE}/admin/archives/authorities/${authPersonId}`);
         await page.waitForLoadState('domcontentloaded');
-        const btn = page.locator('button:has-text("Indietro")');
+        const btn = page.locator('button').filter({ hasText: /Indietro|Retour|Back/ });
         await expect(btn).toBeVisible();
     });
 

@@ -142,7 +142,7 @@ test.describe.serial('Loan / Reservation Lifecycle', () => {
          VALUES ('Il Nome della Rosa (loan-reservation fixture)', 1980, 1, 1, NOW(), NOW())`
       );
       testBookId = parseInt(
-        dbQuery(`SELECT LAST_INSERT_ID()`),
+        dbQuery(`SELECT id FROM libri WHERE titolo='Il Nome della Rosa (loan-reservation fixture)' AND deleted_at IS NULL ORDER BY id DESC LIMIT 1`),
         10
       );
     }
