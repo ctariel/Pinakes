@@ -95,7 +95,7 @@ class SruClient
         while ($attempts <= $this->maxRetries) {
             try {
                 return $this->queryServer($server, $index, $term);
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $lastException = $e;
                 $attempts++;
 
@@ -168,12 +168,15 @@ class SruClient
 
         // Parse XML
         $dom = new DOMDocument();
-        libxml_use_internal_errors(true);
+        $prevLibxmlErrors = libxml_use_internal_errors(true);
         if (!$dom->loadXML($response, LIBXML_NONET)) {
             $errors = libxml_get_errors();
             libxml_clear_errors();
-            throw new \Exception("Invalid XML response from $url: " . ($errors[0]->message ?? 'Parse error'));
+            libxml_use_internal_errors($prevLibxmlErrors);
+            throw new \RuntimeException("Invalid XML response from $url: " . ($errors[0]->message ?? 'Parse error'));
         }
+        libxml_clear_errors();
+        libxml_use_internal_errors($prevLibxmlErrors);
 
         $xpath = new DOMXPath($dom);
 

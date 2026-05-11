@@ -320,7 +320,7 @@ ON DUPLICATE KEY UPDATE name = VALUES(name), native_name = VALUES(native_name), 
 
 -- Home Content (French)
 INSERT INTO `home_content` (section_key, title, subtitle, content, button_text, button_link, is_active, display_order, created_at, updated_at) VALUES
-('hero', 'Votre bibliothèque numérique', 'Découvrez, réservez et gérez votre collection de livres', NULL, 'Découvrir le catalogue', '/catalogue', 1, -2, NOW(), NOW()),
+('hero', 'Votre bibliothèque numérique', 'Découvrez, réservez et gérez votre collection de livres', NULL, 'Découvrir le catalogue', '/catalog', 1, -2, NOW(), NOW()),
 ('features_title', 'Pourquoi choisir Pinakes', 'Une expérience bibliothécaire moderne et intuitive, toujours à portée de main', NULL, NULL, NULL, 1, 0, NOW(), NOW()),
 ('feature_1', 'Gestion simplifiée', 'Cataloguez vos livres, gérez les emprunts et les retours avec une interface intuitive et rapide', 'fas fa-tasks', NULL, NULL, 1, 1, NOW(), NOW()),
 ('feature_2', 'Catalogisation complète', 'Importez des données via ISBN, organisez par catégories, créez des étiquettes et suivez chaque exemplaire physique', 'fas fa-book', NULL, NULL, 1, 2, NOW(), NOW()),

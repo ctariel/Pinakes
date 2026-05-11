@@ -908,7 +908,7 @@ $pluginSettings = $pluginSettings ?? [];
         // [FR] France
         bnf: {
             name: '[FR] BnF - Bibliothèque nationale de France',
-            url: 'http://catalogue.bnf.fr/api/SRU',
+            url: 'https://catalogue.bnf.fr/api/SRU',
             db: '',
             version: '1.2',
             syntax: 'unimarcxchange',
