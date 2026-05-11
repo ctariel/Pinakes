@@ -258,7 +258,7 @@ test.describe.serial('Smoke: clean install + core operations', () => {
 
     // Get the book ID from the API for later tests
     const listResp = await page.request.get(
-      `${BASE}/api/libri?start=0&length=5&search[value]=${encodeURIComponent(BOOK_TITLE)}`
+      `${BASE}/api/libri?start=0&length=5&search_text=${encodeURIComponent(BOOK_TITLE)}`
     );
     const listData = await listResp.json();
     expect(listData.data.length).toBeGreaterThan(0);
@@ -307,7 +307,7 @@ test.describe.serial('Smoke: clean install + core operations', () => {
     // Verify the title was updated via API — search by RUN_ID so we only
     // match the record this run created (the DB may hold titles from prior runs).
     const listResp = await page.request.get(
-      `${BASE}/api/libri?start=0&length=5&search[value]=${encodeURIComponent(RUN_ID)}`
+      `${BASE}/api/libri?start=0&length=5&search_text=${encodeURIComponent(RUN_ID)}`
     );
     const listData = await listResp.json();
     expect(listData.data.length).toBeGreaterThan(0);
