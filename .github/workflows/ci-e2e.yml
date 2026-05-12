@@ -48,21 +48,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── PHP 8.2 (ondrej PPA) ────────────────────────────────────────────────
+      # ── Apache2 + mod_php ───────────────────────────────────────────────────
+      # Install Apache before setup-php adds external package sources; the app
+      # supports PHP >= 8.1, so the Ubuntu mod_php package is sufficient here.
+      - name: Install Apache2 + mod_php
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y apache2 libapache2-mod-php
+          sudo a2enmod rewrite headers
+          php_module="$(find /etc/apache2/mods-available -maxdepth 1 -name 'php*.load' -printf '%f\n' | sed 's/\.load$//' | sort -V | tail -n1)"
+          if [ -n "${php_module}" ]; then
+            sudo a2enmod "${php_module}"
+          fi
+          sudo a2dissite 000-default || true
+
+      # ── PHP 8.2 CLI for Composer and tooling ────────────────────────────────
       - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
           extensions: mysqli, mbstring, json, curl, openssl, zip, gd, intl, xml
           coverage: none
-
-      # ── Apache2 + mod_php ───────────────────────────────────────────────────
-      - name: Install Apache2 + mod_php8.2
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y apache2 libapache2-mod-php8.2
-          sudo a2enmod rewrite php8.2 headers
-          sudo a2dissite 000-default || true
 
       - name: Configure virtual host on port 8081
         env:
