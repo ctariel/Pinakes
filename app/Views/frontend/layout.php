@@ -74,17 +74,25 @@ $archivesAvailable = $archivesAvailable ?? false;
 $archivesRoute = $archivesRoute ?? '/archive';
 try {
     if (!$archivesAvailable && isset($container)) {
-        $dbConn = $container->get('db');
-        if ($dbConn instanceof mysqli) {
-            $pluginCheck = $dbConn->query("SELECT 1 FROM plugins WHERE name = 'archives' AND is_active = 1 LIMIT 1");
-            if ($pluginCheck instanceof mysqli_result && $pluginCheck->num_rows === 1) {
+        // Use PluginManager::isActive() (per-process cached) instead of an
+        // ad-hoc `SELECT 1 FROM plugins ...` query — this layout renders on
+        // every frontend page, including anonymous catalog crawls, so the
+        // raw lookup was an unconditional extra DB round-trip per request.
+        $archivesPluginActive = false;
+        if ($container->has('pluginManager')) {
+            /** @var \App\Support\PluginManager $pluginManager */
+            $pluginManager = $container->get('pluginManager');
+            $archivesPluginActive = $pluginManager->isActive('archives');
+        }
+        if ($archivesPluginActive) {
+            $dbConn = $container->get('db');
+            if ($dbConn instanceof mysqli) {
                 $unitCheck = $dbConn->query("SELECT 1 FROM archival_units WHERE deleted_at IS NULL LIMIT 1");
                 if ($unitCheck instanceof mysqli_result && $unitCheck->num_rows === 1) {
                     $archivesAvailable = true;
                 }
                 if ($unitCheck instanceof mysqli_result) { $unitCheck->free(); }
             }
-            if ($pluginCheck instanceof mysqli_result) { $pluginCheck->free(); }
         }
     }
     if ($archivesAvailable) {
@@ -1922,7 +1930,7 @@ $htmlLang = substr($currentLocale, 0, 2);
                         const arcLabel = escapeHtml(arc.label ?? '');
                         const arcRef = escapeHtml(arc.identifier ?? '');
                         html += '<a href="' + arcUrl + '" class="search-result-item archive-result" style="display: flex; align-items: center; padding: 0.75rem 1rem; text-decoration: none; color: #000000; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor=\'#f9fafb\'" onmouseout="this.style.backgroundColor=\'transparent\'">' +
-                            '<div style="width: 40px; height: 40px; background: #dcfce7; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 0.75rem; color: #16a34a; flex-shrink: 0;"><i class="fas fa-archive"></i></div>' +
+                            '<div style="width: 40px; height: 40px; background: #dcfce7; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 0.75rem; color: #16a34a; flex-shrink: 0;"><i class="fas fa-archive" aria-hidden="true"></i></div>' +
                             '<div>' +
                             '<div style="font-weight: 600; font-size: 0.875rem; margin-bottom: 0.125rem; color: #000000;">' + arcLabel + '</div>' +
                             (arcRef ? '<div style="font-size: 0.75rem; color: #6b7280; font-family: monospace;">' + arcRef + '</div>' : '') +

@@ -2246,7 +2246,8 @@ class Updater
                 $parentTarget = realpath(dirname($targetPath));
                 if ($parentTarget !== false) {
                     $parentTarget = str_replace('\\', '/', $parentTarget);
-                    if (strpos($parentTarget, $realDest) !== 0) {
+                    // Append '/' to prevent prefix-collision: '/var/www/dest2' must not pass when $realDest='/var/www/dest'
+                    if ($parentTarget !== $realDest && !str_starts_with($parentTarget, $realDest . '/')) {
                         throw new Exception(sprintf(__('Percorso non valido nel pacchetto: %s'), $relativePath));
                     }
                 }

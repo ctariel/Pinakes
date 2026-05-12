@@ -1607,7 +1607,7 @@ ob_start();
 
                     <div class="mb-1">
                         <span class="badge bg-light text-secondary fw-normal" style="font-size: 0.7rem;">
-                            <i class="fas <?= htmlspecialchars(\App\Support\MediaLabels::icon($resolvedTipoMedia), ENT_QUOTES, 'UTF-8') ?> me-1"></i><?= \App\Support\MediaLabels::tipoMediaDisplayName($resolvedTipoMedia) ?>
+                            <i class="fas <?= htmlspecialchars(\App\Support\MediaLabels::icon($resolvedTipoMedia), ENT_QUOTES, 'UTF-8') ?> me-1" aria-hidden="true"></i><?= \App\Support\MediaLabels::tipoMediaDisplayName($resolvedTipoMedia) ?>
                         </span>
                     </div>
                     <h1 class="fw-bold mb-3" id="book-title" style="font-size: clamp(1.5rem, 3.5vw, 2.25rem);">

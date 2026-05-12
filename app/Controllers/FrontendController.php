@@ -739,11 +739,20 @@ class FrontendController
 
         // Check whether the BIBFRAME Linked Data plugin is active.
         // Done before template include so the view can use $bibframePluginActive.
+        // Uses PluginManager::isActive() which caches per-process — the raw
+        // `SELECT 1 FROM plugins ...` here used to run on every render of the
+        // book-detail page (hottest catalog URL), including anonymous crawls.
         $bibframePluginActive = false;
-        $bibframePluginCheck = $db->query("SELECT 1 FROM plugins WHERE name = 'bibframe-linked-data' AND is_active = 1 LIMIT 1");
-        if ($bibframePluginCheck instanceof \mysqli_result) {
-            $bibframePluginActive = $bibframePluginCheck->num_rows === 1;
-            $bibframePluginCheck->free();
+        if ($this->container !== null && $this->container->has('pluginManager')) {
+            try {
+                /** @var \App\Support\PluginManager $pluginManager */
+                $pluginManager = $this->container->get('pluginManager');
+                $bibframePluginActive = $pluginManager->isActive('bibframe-linked-data');
+            } catch (\Throwable $e) {
+                \App\Support\SecureLogger::warning('FrontendController: pluginManager lookup failed', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         // Render template

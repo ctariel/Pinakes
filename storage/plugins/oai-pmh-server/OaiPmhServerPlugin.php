@@ -2524,10 +2524,13 @@ class OaiPmhServerPlugin
 
     /**
      * Require admin or staff via session or HTTP Basic Auth.
-     * Sets $out to a 403 response and returns false when auth fails.
+     *
+     * RFC 7235 compliant:
+     * - No credentials supplied: 401 + WWW-Authenticate (challenge the client)
+     * - Credentials supplied but invalid: 403 (forbidden)
      *
      * @param ResponseInterface       $response template response
-     * @param ResponseInterface|null  &$out     set to 403 on failure
+     * @param ResponseInterface|null  &$out     set to 401 or 403 on failure
      * @param ServerRequestInterface|null $request used for Basic Auth header
      */
     private function requireAdminForDownload(
@@ -2542,20 +2545,22 @@ class OaiPmhServerPlugin
             return true;
         }
 
-        if ($request !== null) {
-            $auth = $request->getHeaderLine('Authorization');
-            if (str_starts_with($auth, 'Basic ')) {
-                $decoded = base64_decode(substr($auth, 6), true);
-                if ($decoded !== false) {
-                    $parts = explode(':', $decoded, 2);
-                    if (count($parts) === 2 && $this->authenticateBasicOai($parts[0], $parts[1])) {
-                        return true;
-                    }
+        $auth = $request !== null ? $request->getHeaderLine('Authorization') : '';
+        if ($auth !== '' && str_starts_with($auth, 'Basic ')) {
+            $decoded = base64_decode(substr($auth, 6), true);
+            if ($decoded !== false) {
+                $parts = explode(':', $decoded, 2);
+                if (count($parts) === 2 && $this->authenticateBasicOai($parts[0], $parts[1])) {
+                    return true;
                 }
             }
+            // Credentials present but invalid
+            $out = $response->withStatus(403);
+            return false;
         }
 
-        $out = $response->withStatus(403);
+        // No credentials provided — challenge the client (RFC 7235 §3.1)
+        $out = $response->withStatus(401)->withHeader('WWW-Authenticate', 'Basic realm="OAI-PMH"');
         return false;
     }
 
