@@ -57,6 +57,77 @@ function dbExec(sql) {
     execFileSync('mysql', mysqlArgs(sql), { encoding: 'utf-8', timeout: 10_000, env: MYSQL_ENV() });
 }
 
+function tableExists(tableName) {
+    const count = dbQuery(
+        `SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = '${tableName.replace(/'/g, "''")}'`
+    );
+    return parseInt(count, 10) === 1;
+}
+
+function getArchivesPluginState() {
+    const row = dbQuery(
+        "SELECT p.id, p.is_active, COUNT(ph.id) AS hooks " +
+        "FROM plugins p " +
+        "LEFT JOIN plugin_hooks ph ON ph.plugin_id = p.id " +
+        "AND ph.hook_name = 'app.routes.register' " +
+        "AND ph.callback_method = 'registerRoutes' " +
+        "AND ph.is_active = 1 " +
+        "WHERE p.name = 'archives' " +
+        "GROUP BY p.id, p.is_active " +
+        "LIMIT 1"
+    );
+    if (!row) return { id: 0, active: false, hooks: 0 };
+    const parts = row.split('\t');
+    return {
+        id: parseInt(parts[0], 10) || 0,
+        active: parts[1] === '1',
+        hooks: parseInt(parts[2], 10) || 0,
+    };
+}
+
+async function pluginApiCall(page, action, pluginId) {
+    return page.evaluate(async ([act, pid]) => {
+        const csrfInput = document.querySelector('input[name="csrf_token"]');
+        const token = csrfInput ? (/** @type {HTMLInputElement} */ (csrfInput)).value : '';
+        const formData = new FormData();
+        formData.append('csrf_token', token);
+        const res = await fetch(
+            `${window.location.origin}${window.BASE_PATH || ''}/admin/plugins/${pid}/${act}`,
+            { method: 'POST', body: formData }
+        );
+        return res.json();
+    }, [action, pluginId]);
+}
+
+async function ensureArchivesPlugin(page) {
+    let plugin = getArchivesPluginState();
+    if (plugin.id === 0) {
+        throw new Error('Archives plugin is not registered in the plugins table');
+    }
+
+    if (!plugin.active || plugin.hooks === 0 || !tableExists('archival_units')) {
+        await page.goto(`${BASE}/admin/plugins`);
+        if (plugin.active) {
+            const deactivate = await pluginApiCall(page, 'deactivate', plugin.id);
+            if (!deactivate.success) {
+                throw new Error(`Archives plugin deactivation failed: ${deactivate.message || deactivate.error || ''}`);
+            }
+        }
+
+        const activate = await pluginApiCall(page, 'activate', plugin.id);
+        if (!activate.success) {
+            throw new Error(`Archives plugin activation failed: ${activate.message || activate.error || ''}`);
+        }
+
+        plugin = getArchivesPluginState();
+        if (!plugin.active || plugin.hooks === 0 || !tableExists('archival_units')) {
+            throw new Error('Archives plugin activation did not create archival_units and route hooks');
+        }
+    }
+}
+
 const TAG      = 'E2E_SRCH_' + Date.now();
 const FONDS_REF = TAG + '_F1';
 const SERIES_REF = TAG + '_S1';
@@ -84,6 +155,19 @@ test.describe.serial('Archives search bar — admin + public (25 tests)', () => 
     let page;
 
     test.beforeAll(async ({ browser }) => {
+        ctx  = await browser.newContext();
+        page = await ctx.newPage();
+
+        // Login
+        await page.goto(`${BASE}/login`);
+        await page.fill('input[name="email"]', ADMIN_EMAIL);
+        await page.fill('input[name="password"]', ADMIN_PASS);
+        await Promise.all([
+            page.waitForURL(/\/admin\//, { timeout: 15_000 }),
+            page.click('button[type="submit"]'),
+        ]);
+
+        await ensureArchivesPlugin(page);
         cleanupTag();
 
         // Seed test data directly in DB so tests are fast and independent.
@@ -104,18 +188,6 @@ test.describe.serial('Archives search bar — admin + public (25 tests)', () => 
              VALUES ('${FILE_REF}', 'TEST', 'file', 'E2E Fascicolo Gamma', 'E2E Fascicolo Gamma', ${seriesId}, 1910, 1940)`
         );
         fileId = parseInt(dbQuery(`SELECT id FROM archival_units WHERE reference_code='${FILE_REF}' LIMIT 1`), 10);
-
-        ctx  = await browser.newContext();
-        page = await ctx.newPage();
-
-        // Login
-        await page.goto(`${BASE}/login`);
-        await page.fill('input[name="email"]', ADMIN_EMAIL);
-        await page.fill('input[name="password"]', ADMIN_PASS);
-        await Promise.all([
-            page.waitForURL(/\/admin\//, { timeout: 15_000 }),
-            page.click('button[type="submit"]'),
-        ]);
     });
 
     test.afterAll(async () => {
@@ -202,8 +274,8 @@ test.describe.serial('Archives search bar — admin + public (25 tests)', () => 
 
     test('13 · Admin: contatore risultati mostrato dopo ricerca', async () => {
         await page.goto(`${BASE}/admin/archives?q=${encodeURIComponent(TAG)}`);
-        // Deve esserci un testo "3 risultati" o simile
-        const countEl = page.locator('p:has-text("risultati")');
+        // Deve esserci un testo localizzato "3 risultati/résultats/results" o simile.
+        const countEl = page.locator('p').filter({ hasText: /\b3\s+(risultati|résultats|results)\b/i }).first();
         await expect(countEl).toBeVisible();
         const txt = await countEl.textContent() || '';
         expect(txt).toMatch(/3/);
@@ -275,8 +347,12 @@ test.describe.serial('Archives search bar — admin + public (25 tests)', () => 
 
     test('24 · Pubblico: pulsante × resetta al catalogo radice', async () => {
         await page.goto(`${BASE}/archivio?q=E2E`);
-        await page.locator('.archive-search-form a[href$="/archivio"], .archive-search-form a[href$="/archive"]').click();
-        await expect(page).toHaveURL(/\/(?:archivio|archive)$/, { timeout: 5_000 });
+        await page.locator(
+            '.archive-search-form a[href$="/archivio"], ' +
+            '.archive-search-form a[href$="/archive"], ' +
+            '.archive-search-form a[href$="/archives"]'
+        ).click({ timeout: 5_000 });
+        await expect(page).toHaveURL(/\/(?:archivio|archive|archives)$/, { timeout: 5_000 });
         await expect(page.locator('.archive-search-form input[name="q"]')).toHaveValue('');
     });
 
@@ -291,7 +367,7 @@ test.describe.serial('Archives search bar — admin + public (25 tests)', () => 
     test('26 · Catalogo: ricerca per titolo mostra sezione archivio', async () => {
         // Search for "Fondo" — matches TAG_F1 "E2E Fondo Alpha"
         await page.goto(`${BASE}/catalogo?search=${encodeURIComponent('E2E Fondo')}`);
-        const archiveSection = page.locator('text=Trovato anche nell\'archivio');
+        const archiveSection = page.getByText(/Trovato anche nell['’]archivio|Trouvé aussi dans l['’]archive|Also found in (the )?archive/i);
         await expect(archiveSection).toBeVisible({ timeout: 5_000 });
         await expect(page.locator('a', { hasText: 'E2E Fondo Alpha' }).first()).toBeVisible();
     });
@@ -315,7 +391,7 @@ test.describe.serial('Archives search bar — admin + public (25 tests)', () => 
         // "E2E Fondo Alpha" has 9+ chars; stem = "E2E Fondo Alph" — still matches.
         // Use "E2E Fond" (8 chars) as stem to verify: stem = "E2E Fon" matches "Fondo".
         await page.goto(`${BASE}/catalogo?search=${encodeURIComponent('E2E Fond')}`);
-        const archiveSection = page.locator('text=Trovato anche nell\'archivio');
+        const archiveSection = page.getByText(/Trovato anche nell['’]archivio|Trouvé aussi dans l['’]archive|Also found in (the )?archive/i);
         await expect(archiveSection).toBeVisible({ timeout: 5_000 });
         await expect(page.locator('a', { hasText: 'E2E Fondo Alpha' }).first()).toBeVisible();
     });
