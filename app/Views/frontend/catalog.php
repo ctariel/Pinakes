@@ -1429,7 +1429,8 @@ ob_start();
                         </button>
                     </div>
 
-                    <?php if (!empty($archiveResults)): ?>
+                    <?php // FIX F014: only show archive fallback when book results are empty, keep as sibling of #empty-state ?>
+                    <?php if (!empty($archiveResults) && empty($books)): ?>
                     <?php $e = static fn(mixed $v): string => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8'); ?>
                     <div class="mt-4 p-3 rounded border" style="background:var(--light-bg,#f8f9fa);border-color:var(--border-color,#e5e7eb)!important;">
                         <p class="small fw-semibold text-muted mb-2">

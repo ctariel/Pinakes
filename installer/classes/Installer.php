@@ -1457,6 +1457,12 @@ HTACCESS;
             }
         };
 
+        // NOTE: Only the 5 historically-default plugins are auto-activated on fresh install.
+        // Other bundled plugins (BundledPlugins::LIST) are registered later by
+        // autoRegisterBundledPlugins() and remain deactivated until admin opt-in.
+        // Keeping new plugins opt-in is safer for fresh installs: it avoids surprising
+        // behavior changes, side effects (extra routes, DB tables, background jobs),
+        // and lets the admin review and enable each plugin consciously.
         // Install all default plugins (excluding scraping-pro)
         $installPlugin('open-library');
         $installPlugin('z39-server', [

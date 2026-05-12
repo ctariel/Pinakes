@@ -14,6 +14,11 @@ $statusColors = [
     'error'   => 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
     'pending' => 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300',
 ];
+$statusLabel = [
+    'ok'      => __('OK'),
+    'error'   => __('Errore'),
+    'pending' => __('In sospeso'),
+];
 $partnersById = [];
 foreach ($partners as $p) {
     $partnersById[(int) $p['id']] = $p['name'];
@@ -96,7 +101,7 @@ foreach ($partners as $p) {
                 $cls = $statusColors[$status] ?? 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300';
                 ?>
                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <?= $cls ?>">
-                  <?= htmlspecialchars((string) ($tx['status'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
+                  <?= htmlspecialchars($statusLabel[strtolower((string) ($tx['status'] ?? ''))] ?? (string) ($tx['status'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
                 </span>
               </td>
               <td class="px-5 py-3 text-sm text-gray-500 dark:text-gray-400 whitespace-nowrap">

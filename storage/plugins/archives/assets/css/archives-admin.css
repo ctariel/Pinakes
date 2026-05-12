@@ -1,0 +1,15 @@
+/**
+ * Archives plugin — admin styles.
+ *
+ * Extracted from inline <style> in views/index.php so we no longer
+ * emit a per-page stylesheet block. Loaded by the Slim asset route
+ * /plugins/archives/assets/css/archives-admin.css (see
+ * ArchivesPlugin::serveAsset).
+ */
+
+/* Rotate the chevron when the "Actions" dropdown is open. */
+#arc-actions-details[open] .arc-chevron { transform: rotate(180deg); }
+
+/* Hide the default browser disclosure marker on the summary element
+   so we can render our own SVG chevron instead. */
+#arc-actions-details summary::-webkit-details-marker { display: none; }

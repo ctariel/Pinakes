@@ -22,6 +22,12 @@ $typeLabel = [
     'family'    => __('Famiglia (genealogica)'),
 ];
 ?>
+<script>
+    // Remember this URL (with any query/filter state) so the detail page
+    // can fall back to it when document.referrer is not same-origin
+    // (e.g. external referrer stripping, opened in a new tab).
+    try { sessionStorage.setItem('archives_authorities_return_url', window.location.href); } catch (e) { /* private mode / disabled storage */ }
+</script>
 <div class="p-6 max-w-7xl mx-auto">
     <div class="flex items-center justify-between mb-6">
         <div>

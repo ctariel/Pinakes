@@ -21,6 +21,8 @@ use Psr\Http\Message\ServerRequestInterface;
  *   CheckOutItem     — creates a loan (admin/staff only)
  *   CheckInItem      — closes a loan (admin/staff only)
  *   RenewItem        — extends a loan due date (admin/staff only)
+ *   RequestItem      — patron-side request for an item (admin/staff only)
+ *   CancelRequestItem — cancels a pending request (admin/staff only)
  *
  * Unsupported messages return a ProblemType=Unsupported response.
  *

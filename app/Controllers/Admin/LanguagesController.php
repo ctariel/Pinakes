@@ -350,9 +350,18 @@ class LanguagesController
         $languageModel = new Language($db);
 
         try {
+            // Capture previous active state so we can inform the user when an
+            // inactive language is re-activated by being promoted to default.
+            $previous = $languageModel->getByCode($code);
+            $wasInactive = ($previous !== null && (int)($previous['is_active'] ?? 0) === 0);
+
             $languageModel->setDefault($code);
             $this->synchronizeGlobalLocale($db, $code);
             $_SESSION['flash_success'] = __("Lingua predefinita impostata con successo");
+
+            if ($wasInactive) {
+                $_SESSION['flash_info'] = sprintf(__('Language %s has been activated automatically'), $code);
+            }
         } catch (\Throwable $e) {
             SecureLogger::error('LanguagesController::setDefault error: ' . $e->getMessage());
             $_SESSION['flash_error'] = __("Errore nell'operazione.");

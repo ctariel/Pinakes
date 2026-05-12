@@ -206,14 +206,49 @@ $archiveSchema = json_encode($schema, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UN
                     <?php endif; ?>
 
                     <?php if (!empty($unit_files)): ?>
+                        <?php
+                        // Inline byte formatter (no global helper exists outside Updater).
+                        $bytesStr = static function (int $bytes): string {
+                            if ($bytes < 0) {
+                                return '';
+                            }
+                            $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                            $i = 0;
+                            $val = (float) $bytes;
+                            while ($val >= 1024 && $i < count($units) - 1) {
+                                $val /= 1024;
+                                $i++;
+                            }
+                            return ($i === 0 ? (string) $bytes : number_format($val, 1)) . ' ' . $units[$i];
+                        };
+                        ?>
                         <div class="archive-actions" style="justify-content:flex-start;flex-direction:column;gap:.5rem;">
                             <?php foreach ($unit_files as $uf): ?>
                                 <?php
                                 $ufPath  = (string) $uf['file_path'];
                                 $ufMime  = (string) $uf['file_mime'];
-                                $ufName  = (string) ($uf['original_filename'] ?: basename($ufPath));
+                                // Sanitize basename fallback to prevent leaking unexpected path
+                                // characters into the download="" attribute (defence-in-depth).
+                                $ufBaseFallback = preg_replace('/[^a-zA-Z0-9._-]/', '', basename($ufPath));
+                                if ($ufBaseFallback === null || $ufBaseFallback === '') {
+                                    $ufBaseFallback = __('file');
+                                }
+                                $ufName  = (string) ($uf['original_filename'] ?: $ufBaseFallback);
                                 $ufUrl   = url($ufPath);
                                 $ufAudio = str_starts_with($ufMime, 'audio/');
+                                // Compute file size on the fly. file_size column may not be
+                                // present in schema yet; @filesize() is guarded against
+                                // missing files and traversal-blocked paths.
+                                $ufSizeStr = '';
+                                if (isset($uf['file_size']) && (int) $uf['file_size'] > 0) {
+                                    $ufSizeStr = $bytesStr((int) $uf['file_size']);
+                                } elseif ($ufPath !== '') {
+                                    $ufAbsPath = __DIR__ . '/../../../../../public' . $ufPath;
+                                    $ufSizeBytes = @filesize($ufAbsPath);
+                                    if ($ufSizeBytes !== false && $ufSizeBytes > 0) {
+                                        $ufSizeStr = $bytesStr((int) $ufSizeBytes);
+                                    }
+                                }
                                 ?>
                                 <div class="d-flex align-items-center gap-2 w-100">
                                     <?php if ($ufAudio): ?>
@@ -229,6 +264,9 @@ $archiveSchema = json_encode($schema, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UN
                                     <?php endif; ?>
                                     <?php if ($ufMime !== ''): ?>
                                         <span class="text-muted small ref-mono"><?= $e($ufMime) ?></span>
+                                    <?php endif; ?>
+                                    <?php if ($ufSizeStr !== ''): ?>
+                                        <span class="text-muted small"><?= $e($ufSizeStr) ?></span>
                                     <?php endif; ?>
                                 </div>
                             <?php endforeach; ?>

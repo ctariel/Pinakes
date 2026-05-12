@@ -1075,6 +1075,7 @@ $htmlLang = substr($currentLocale, 0, 2);
     <script src="<?= htmlspecialchars(assetUrl('main.bundle.js'), ENT_QUOTES, 'UTF-8') ?>" defer></script>
     <script src="<?= htmlspecialchars(assetUrl('js/swal-config.js'), ENT_QUOTES, 'UTF-8') ?>" defer></script>
 
+    <?php $searchViewAllLabel = json_encode(__('Vedi tutti i risultati'), JSON_HEX_TAG | JSON_HEX_AMP); ?>
     <script>
         // Search functionality with preview - wrapped in DOMContentLoaded for reliability
         document.addEventListener('DOMContentLoaded', function () {
@@ -1212,7 +1213,7 @@ $htmlLang = substr($currentLocale, 0, 2);
                         const arcLabel = escapeHtml(arc.label ?? '');
                         const arcRef = escapeHtml(arc.identifier ?? '');
                         html += '<a href="' + arcUrl + '" class="search-result-item archive-result" style="display: flex; align-items: center; padding: 0.75rem 1rem; text-decoration: none; color: #000000; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor=\'#f9fafb\'" onmouseout="this.style.backgroundColor=\'transparent\'">' +
-                            '<div style="width: 40px; height: 40px; background: #dcfce7; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 0.75rem; color: #16a34a; flex-shrink: 0;"><i class="fas fa-archive"></i></div>' +
+                            '<div style="width: 40px; height: 40px; background: #dcfce7; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 0.75rem; color: #16a34a; flex-shrink: 0;"><i class="fas fa-archive" aria-hidden="true"></i></div>' +
                             '<div>' +
                             '<div style="font-weight: 600; font-size: 0.875rem; margin-bottom: 0.125rem; color: #000000;">' + arcLabel + '</div>' +
                             (arcRef ? '<div style="font-size: 0.75rem; color: #6b7280; font-family: monospace;">' + arcRef + '</div>' : '') +
@@ -1225,7 +1226,7 @@ $htmlLang = substr($currentLocale, 0, 2);
                 html += '<div class="search-section" style="padding: 0.75rem 1rem;">' +
                     '<a href="' + <?= json_encode($catalogRoute, JSON_HEX_TAG | JSON_HEX_AMP) ?> + '?search=' + encodeURIComponent(currentSearchInput ? currentSearchInput.value : '') + '"' +
                     ' class="search-view-all" style="display: flex; align-items: center; justify-content: center; padding: 0.5rem; background: #f3f4f6; border-radius: 0.375rem; text-decoration: none; color: #000000; font-weight: 500; font-size: 0.875rem; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor=\'#e5e7eb\'" onmouseout="this.style.backgroundColor=\'#f3f4f6\'">' +
-                    'Vedi tutti i risultati <i class="fas fa-arrow-right" style="margin-left: 0.5rem; font-size: 0.75rem;"></i>' +
+                    '' + <?= $searchViewAllLabel ?> + ' <i class="fas fa-arrow-right" style="margin-left: 0.5rem; font-size: 0.75rem;"></i>' +
                     '</a>' +
                     '</div>';
 

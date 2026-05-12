@@ -97,8 +97,8 @@ $archiveUrl = htmlspecialchars(url($archiveBase), ENT_QUOTES, 'UTF-8');
                     <?= __("Cerca") ?>
                 </button>
                 <?php if ($isSearch): ?>
-                    <a href="<?= $archiveUrl ?>" class="btn btn-outline-secondary" title="<?= $e(__("Azzera filtri")) ?>">
-                        &times;
+                    <a href="<?= $archiveUrl ?>" class="btn btn-outline-secondary" aria-label="<?= $e(__("Azzera filtri")) ?>" title="<?= $e(__("Azzera filtri")) ?>" style="min-width:44px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;">
+                        <i class="fas fa-times" aria-hidden="true"></i>
                     </a>
                 <?php endif; ?>
             </div>
@@ -107,15 +107,19 @@ $archiveUrl = htmlspecialchars(url($archiveBase), ENT_QUOTES, 'UTF-8');
 
     <?php if ($isSearch && !empty($rows)): ?>
         <p class="text-muted small mb-3">
-            <?= sprintf(__("%d risultati"), $total) ?>
+            <?= __n("%d risultato", "%d risultati", $total) ?>
             <?php if ($q !== ''): ?>
                 <?= __("per") ?> <strong><?= $e($q) ?></strong>
             <?php endif; ?>
             <?php if ($level !== ''): ?>
                 · <?= $e($levelLabel[$level] ?? $level) ?>
             <?php endif; ?>
-            <?php if ($dateFrom !== '' || $dateTo !== ''): ?>
-                · <?= $dateFrom !== '' ? $e($dateFrom) : '…' ?>–<?= $dateTo !== '' ? $e($dateTo) : '…' ?>
+            <?php if ($dateFrom !== '' && $dateTo !== ''): ?>
+                · <?= $e($dateFrom) ?>–<?= $e($dateTo) ?>
+            <?php elseif ($dateFrom !== ''): ?>
+                · <?= __("dal") ?> <?= $e($dateFrom) ?>
+            <?php elseif ($dateTo !== ''): ?>
+                · <?= __("fino al") ?> <?= $e($dateTo) ?>
             <?php endif; ?>
         </p>
     <?php endif; ?>

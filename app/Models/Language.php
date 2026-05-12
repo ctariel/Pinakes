@@ -266,6 +266,13 @@ class Language
     /**
      * Set language as default (and unset others)
      *
+     * Note: Promoting an inactive language to default re-activates it.
+     * A default language cannot be inactive — the SQL update forces
+     * `is_active = 1` on the language being promoted. Callers that care
+     * about the previous activation state should read `is_active` from
+     * the row BEFORE calling this method (e.g. to surface a flash
+     * message informing the user that the language was auto-activated).
+     *
      * @param string $code Language code to set as default
      * @return bool True on success
      * @throws \Exception If operation fails

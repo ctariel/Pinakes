@@ -7,8 +7,9 @@
  *   1. Namespaced direct loading via App\Plugins\OpenUrlResolver\OpenUrlResolverPlugin
  *   2. PluginManager via the global unnamespaced OpenUrlResolverPlugin proxy
  *
- * PluginManager::getPluginClassName('openurl-resolver') → 'OpenUrlResolverPlugin'
- * (no namespace), so we expose a thin forwarding class in the global namespace.
+ * PluginManager::getPluginClassName("openurl-resolver") → "OpenurlResolverPlugin"
+ * (single capital, per explode("-")+ucfirst). We declare the class as "OpenUrlResolverPlugin"
+ * for camelCase readability; PHP class lookup is case-insensitive so both names resolve.
  */
 
 require_once __DIR__ . '/OpenUrlResolverPlugin.php';

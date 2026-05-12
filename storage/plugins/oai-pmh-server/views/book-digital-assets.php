@@ -88,7 +88,8 @@ if (!function_exists('oaiFormatBytes')) {
                         <button type="button"
                                 class="oai-delete-asset text-red-500 hover:text-red-700 transition-colors"
                                 data-asset-id="<?= (int) $asset['id'] ?>"
-                                title="<?= __("Elimina") ?>">
+                                title="<?= __("Elimina copia digitalizzata") ?>"
+                                aria-label="<?= __("Elimina copia digitalizzata") ?>">
                             <i class="fas fa-trash-alt"></i>
                         </button>
                     </td>
@@ -189,11 +190,27 @@ if (!function_exists('oaiFormatBytes')) {
     var DEL_BASE   = <?= json_encode($deleteBase, JSON_HEX_TAG) ?>;
     var MSG_CONFIRM = <?= json_encode(__('Eliminare questa copia digitalizzata?'), JSON_HEX_TAG) ?>;
     var MSG_ERR_URL = <?= json_encode(__('URL obbligatorio.'), JSON_HEX_TAG) ?>;
+    var MSG_ERR_URL_INVALID = <?= json_encode(__('URL non valido.'), JSON_HEX_TAG) ?>;
+    var MSG_ERR_MD5 = <?= json_encode(__('MD5 non valido (32 caratteri esadecimali).'), JSON_HEX_TAG) ?>;
+    var MSG_ERR_INT = <?= json_encode(__('Il valore deve essere un intero non negativo.'), JSON_HEX_TAG) ?>;
     var MSG_ERR_NET = <?= json_encode(__('Errore di rete.'), JSON_HEX_TAG) ?>;
     var MSG_ERR     = <?= json_encode(__('Errore'), JSON_HEX_TAG) ?>;
     var MSG_DEL     = <?= json_encode(__('Elimina'), JSON_HEX_TAG) ?>;
+    var MSG_DELETE_ASSET = <?= json_encode(__('Elimina copia digitalizzata'), JSON_HEX_TAG) ?>;
+    var MSG_DELETED = <?= json_encode(__('Copia digitalizzata eliminata'), JSON_HEX_TAG) ?>;
+    var MSG_UNSAFE_URL = <?= json_encode(__('URL non sicuro'), JSON_HEX_TAG) ?>;
     var MSG_LOADING = <?= json_encode(__('Salvataggio...'), JSON_HEX_TAG) ?>;
     var ADD_BTN_HTML = '<i class="fas fa-check"></i> ' + <?= json_encode(__('Aggiungi'), JSON_HEX_TAG) ?>;
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+
+    function hasSwal() {
+        return typeof window !== 'undefined' && typeof window.Swal !== 'undefined' && typeof window.Swal.fire === 'function';
+    }
 
     document.getElementById('oai-toggle-add-form').addEventListener('click', function () {
         document.getElementById('oai-add-form').classList.toggle('hidden');
@@ -206,13 +223,50 @@ if (!function_exists('oaiFormatBytes')) {
     function val(id) { return (document.getElementById(id) || {value:''}).value || ''; }
     function int0(id) { return parseInt(val(id), 10) || 0; }
 
+    var FIELD_IDS = ['oai-new-url','oai-new-md5','oai-new-filesize','oai-new-width','oai-new-height','oai-new-ppi'];
+
     function clearForm() {
-        ['oai-new-url','oai-new-md5','oai-new-filesize','oai-new-width','oai-new-height','oai-new-ppi']
-            .forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
+        FIELD_IDS.forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
         document.getElementById('oai-new-filetype').value = 'PDF';
         var err = document.getElementById('oai-add-error');
         err.textContent = '';
         err.classList.add('hidden');
+        clearFieldErrors();
+    }
+
+    function clearFieldErrors() {
+        FIELD_IDS.forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.removeAttribute('aria-invalid');
+            var errId = id + '-err';
+            var errEl = document.getElementById(errId);
+            if (errEl && errEl.parentNode) errEl.parentNode.removeChild(errEl);
+        });
+    }
+
+    function setFieldError(id, msg) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.setAttribute('aria-invalid', 'true');
+        var errId = id + '-err';
+        var errEl = document.getElementById(errId);
+        if (!errEl) {
+            errEl = document.createElement('span');
+            errEl.id = errId;
+            errEl.className = 'block text-xs text-red-600 dark:text-red-400 mt-1';
+            errEl.setAttribute('role', 'alert');
+            // Insert directly after the input (or its wrapper if input is inside .flex)
+            var anchor = el;
+            // For width/height inputs nested in a flex wrapper, attach after the wrapper
+            if (el.parentNode && el.parentNode.classList && el.parentNode.classList.contains('flex')) {
+                anchor = el.parentNode;
+            }
+            if (anchor.parentNode) {
+                anchor.parentNode.insertBefore(errEl, anchor.nextSibling);
+            }
+        }
+        errEl.textContent = msg;
     }
 
     function setError(msg) {
@@ -223,8 +277,47 @@ if (!function_exists('oaiFormatBytes')) {
 
     document.getElementById('oai-add-asset-btn').addEventListener('click', function () {
         var btn = this;
+        // Clear any prior inline errors on re-submit
+        clearFieldErrors();
+        var err = document.getElementById('oai-add-error');
+        err.textContent = '';
+        err.classList.add('hidden');
+
         var url = val('oai-new-url').trim();
-        if (!url) { setError(MSG_ERR_URL); return; }
+        var md5 = val('oai-new-md5').trim();
+        var hasError = false;
+
+        // (1) URL: required + must parse via new URL()
+        if (!url) {
+            setFieldError('oai-new-url', MSG_ERR_URL);
+            hasError = true;
+        } else {
+            var urlOk = false;
+            try { new URL(url); urlOk = true; } catch (e) { urlOk = false; }
+            if (!urlOk) {
+                setFieldError('oai-new-url', MSG_ERR_URL_INVALID);
+                hasError = true;
+            }
+        }
+
+        // (2) MD5: only validate if non-empty
+        if (md5 !== '' && !/^[0-9a-fA-F]{32}$/.test(md5)) {
+            setFieldError('oai-new-md5', MSG_ERR_MD5);
+            hasError = true;
+        }
+
+        // (3) width / height / filesize / ppi: non-negative integers
+        var intFields = ['oai-new-filesize', 'oai-new-width', 'oai-new-height', 'oai-new-ppi'];
+        intFields.forEach(function (fid) {
+            var raw = val(fid).trim();
+            if (raw === '') return;
+            if (!/^\d+$/.test(raw)) {
+                setFieldError(fid, MSG_ERR_INT);
+                hasError = true;
+            }
+        });
+
+        if (hasError) { setError(MSG_ERR); return; }
         if (btn.disabled) return;
         btn.disabled = true;
         btn.classList.add('opacity-60', 'cursor-not-allowed');
@@ -254,11 +347,7 @@ if (!function_exists('oaiFormatBytes')) {
         });
     });
 
-    document.getElementById('oai-assets-tbody').addEventListener('click', function (e) {
-        var btn = e.target.closest('.oai-delete-asset');
-        if (!btn) return;
-        var aid = parseInt(btn.dataset.assetId, 10);
-        if (!aid || !confirm(MSG_CONFIRM)) return;
+    function performDelete(aid) {
         fetch(DEL_BASE + '/' + aid + '/delete', {
             method: 'POST',
             headers: {'Content-Type': 'application/json', 'X-CSRF-Token': CSRF},
@@ -266,12 +355,63 @@ if (!function_exists('oaiFormatBytes')) {
         })
         .then(function (r) { return r.json(); })
         .then(function (d) {
-            if (!d.success) { alert(d.error || MSG_ERR); return; }
+            if (!d.success) {
+                if (hasSwal()) {
+                    window.Swal.fire({icon: 'error', title: d.error || MSG_ERR});
+                } else {
+                    alert(d.error || MSG_ERR);
+                }
+                return;
+            }
             var row = document.querySelector('#oai-assets-tbody tr[data-asset-id="' + aid + '"]');
             if (row) row.remove();
             syncEmptyState();
+            if (hasSwal()) {
+                window.Swal.fire({
+                    toast: true, position: 'top-end', icon: 'success',
+                    title: MSG_DELETED, timer: 2000, showConfirmButton: false
+                });
+            }
         })
-        .catch(function () { alert(MSG_ERR_NET); });
+        .catch(function () {
+            if (hasSwal()) {
+                window.Swal.fire({icon: 'error', title: MSG_ERR_NET});
+            } else {
+                alert(MSG_ERR_NET);
+            }
+        });
+    }
+
+    document.getElementById('oai-assets-tbody').addEventListener('click', function (e) {
+        var btn = e.target.closest('.oai-delete-asset');
+        if (!btn) return;
+        var aid = parseInt(btn.dataset.assetId, 10);
+        if (!aid) return;
+
+        // Pull context for the confirmation dialog
+        var row = btn.closest('tr');
+        var rowUrl = '';
+        var rowFiletype = '';
+        if (row) {
+            var linkEl = row.querySelector('a, span');
+            if (linkEl) rowUrl = linkEl.getAttribute('href') || linkEl.textContent || '';
+            var typeCell = row.querySelectorAll('td')[1];
+            if (typeCell) rowFiletype = typeCell.textContent || '';
+        }
+
+        if (hasSwal()) {
+            window.Swal.fire({
+                title: MSG_CONFIRM,
+                html: '<code>' + escapeHtml(rowUrl) + '</code><br>' + escapeHtml(rowFiletype),
+                icon: 'warning',
+                showCancelButton: true
+            }).then(function (result) {
+                if (result && result.isConfirmed) performDelete(aid);
+            });
+        } else {
+            if (!confirm(MSG_CONFIRM)) return;
+            performDelete(aid);
+        }
     });
 
     function syncEmptyState() {
@@ -297,18 +437,27 @@ if (!function_exists('oaiFormatBytes')) {
         var tdUrl = document.createElement('td');
         tdUrl.className = 'py-2 pr-4 max-w-xs';
         var link = document.createElement('a');
-        const safeSchemes = ['http:', 'https:'];
+        var safeSchemes = ['http:', 'https:'];
+        var urlAccepted = false;
         try {
-            const parsedUrl = new URL(a.url);
-            if (safeSchemes.includes(parsedUrl.protocol)) {
+            var parsedUrl = new URL(a.url);
+            if (safeSchemes.indexOf(parsedUrl.protocol) !== -1) {
                 link.href = a.url;
+                urlAccepted = true;
             }
         } catch (e) {
             // invalid URL, leave href unset
         }
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
         link.className = 'text-teal-700 dark:text-teal-300 hover:underline truncate block max-w-xs';
+        if (urlAccepted) {
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+        } else {
+            // Rejected URL: visually flag, do not open in new tab, expose warning to AT
+            link.className += ' text-red-500';
+            link.setAttribute('aria-label', MSG_UNSAFE_URL);
+            link.setAttribute('title', MSG_UNSAFE_URL);
+        }
         link.textContent = a.url.split('/').pop() || a.url;
         tdUrl.appendChild(link);
         tr.appendChild(tdUrl);
@@ -345,7 +494,8 @@ if (!function_exists('oaiFormatBytes')) {
         delBtn.type = 'button';
         delBtn.className = 'oai-delete-asset text-red-500 hover:text-red-700 transition-colors';
         delBtn.dataset.assetId = String(a.id);
-        delBtn.title = MSG_DEL;
+        delBtn.title = MSG_DELETE_ASSET;
+        delBtn.setAttribute('aria-label', MSG_DELETE_ASSET);
         var icon = document.createElement('i');
         icon.className = 'fas fa-trash-alt';
         delBtn.appendChild(icon);

@@ -42,7 +42,7 @@ $id = (int) $row['id'];
     <div class="flex items-center gap-3 mb-2">
         <button type="button"
                 data-fallback-url="<?= $e(url('/admin/archives/authorities')) ?>"
-                onclick="if (document.referrer && document.referrer.indexOf(window.location.origin) === 0) { history.back(); } else { window.location.href = this.getAttribute('data-fallback-url'); }"
+                onclick="if (document.referrer && document.referrer.indexOf(window.location.origin) === 0) { history.back(); } else { window.location.href = sessionStorage.getItem('archives_authorities_return_url') || this.getAttribute('data-fallback-url'); }"
                 class="btn-secondary text-xs px-3 py-1.5">
             &larr; <?= __("Indietro") ?>
         </button>

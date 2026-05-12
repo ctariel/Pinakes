@@ -512,14 +512,9 @@ class FrontendController
         $query_params = $where_conditions['params'];
         $param_types = $where_conditions['types'];
 
-        // Extra results from plugins (e.g. archive units) when a search is active.
-        // Mirrors catalog() so search-as-you-type returns the same archive matches
-        // as the full-page render.
-        $searchTerm = trim((string) ($filters['search'] ?? ''));
-        /** @var array<int, array<string, mixed>> $archiveResults */
-        $archiveResults = $searchTerm !== ''
-            ? \App\Support\Hooks::apply('frontend.catalog.archive_results', [], [$searchTerm])
-            : [];
+        // FIX F001: removed archive results hook from catalogAPI() to avoid
+        // returning archive matches in the search-as-you-type JSON payload.
+        // catalog() still renders archives in its empty-state block.
 
         // Query base senza JOIN con autori per evitare duplicati
         // Include genre parents/grandparents/subgenre to support filtering at any level
@@ -599,8 +594,7 @@ class FrontendController
                 'end' => min($offset + $limit, $total_books)
             ],
             'filter_options' => $filter_options,
-            'genre_display' => $genre_display,
-            'archives' => $archiveResults
+            'genre_display' => $genre_display
         ];
 
         $response->getBody()->write(json_encode($data));

@@ -14,6 +14,17 @@ $e = static fn(mixed $v): string => htmlspecialchars((string) $v, ENT_QUOTES, 'U
 $q     = $q     ?? '';
 $level = $level ?? '';
 
+// Translated labels for ISAD(G) levels. Used both by the inner
+// renderRow closure (per-row badge) and the outer "filtered results"
+// banner so the raw enum value (`fonds`, `series`, …) never leaks
+// untranslated into the UI.
+$levelLabel = [
+    'fonds'  => __('Fondo'),
+    'series' => __('Serie'),
+    'file'   => __('Fascicolo'),
+    'item'   => __('Unità'),
+];
+
 // Build a parent_id → children index so we can render a lightweight tree by
 // visiting top-level rows first and recursing. A real CTE-backed tree is
 // roadmapped for Phase 2.
@@ -43,7 +54,7 @@ $renderedIds = [];
 /** @var bool $isFiltered */
 $isFiltered  = false; // set after closure definition; captured by reference
 $renderRow = null;
-$renderRow = function (array $row, int $depth, array $visited = []) use (&$renderRow, &$renderedIds, &$isFiltered, $byParent, $e): string {
+$renderRow = function (array $row, int $depth, array $visited = []) use (&$renderRow, &$renderedIds, &$isFiltered, $byParent, $e, $levelLabel): string {
     // Cycle guard: if a row's id has already been rendered in this branch,
     // stop recursing. Should never happen on sane data but parent_id is a
     // user-controlled column and a stray import could create loops.
@@ -62,12 +73,6 @@ $renderRow = function (array $row, int $depth, array $visited = []) use (&$rende
         'series' => 'bg-blue-100 text-blue-800',
         'file'   => 'bg-green-100 text-green-800',
         'item'   => 'bg-gray-100 text-gray-800',
-    ];
-    $levelLabel = [
-        'fonds'  => __('Fondo'),
-        'series' => __('Serie'),
-        'file'   => __('Fascicolo'),
-        'item'   => __('Unità'),
     ];
     $badgeClass  = $levelBadge[$row['level']] ?? 'bg-gray-100 text-gray-800';
     $levelText   = $levelLabel[$row['level']] ?? $e((string) $row['level']);
@@ -212,10 +217,7 @@ $rootRows = $byParent[0] ?? [];
                     </a>
                 </div>
             </details>
-            <style>
-                #arc-actions-details[open] .arc-chevron { transform: rotate(180deg); }
-                #arc-actions-details summary::-webkit-details-marker { display: none; }
-            </style>
+            <link rel="stylesheet" href="<?= htmlspecialchars(url('/plugins/archives/assets/css/archives-admin.css'), ENT_QUOTES, 'UTF-8') ?>">
 
             <?php /* bottone primario: sempre visibile */ ?>
             <a href="<?= $e(url('/admin/archives/new')) ?>"
@@ -269,12 +271,12 @@ $rootRows = $byParent[0] ?? [];
 
     <?php if (($q !== '' || $level !== '') && !empty($rows)): ?>
         <p class="text-sm text-gray-600 mb-3">
-            <?= sprintf(__("%d risultati"), count($rows)) ?>
+            <?= __n("%d risultato", "%d risultati", count($rows)) ?>
             <?php if ($q !== ''): ?>
                 <?= __("per") ?> <strong><?= $e($q) ?></strong>
             <?php endif; ?>
             <?php if ($level !== ''): ?>
-                · <?= __("livello") ?>: <strong><?= $e($level) ?></strong>
+                · <?= __("livello") ?>: <strong><?= $e($levelLabel[$level] ?? $level) ?></strong>
             <?php endif; ?>
         </p>
     <?php endif; ?>
@@ -287,7 +289,7 @@ $rootRows = $byParent[0] ?? [];
                 <p class="text-sm text-gray-700">
                     <?= __("Nessun risultato") ?>
                     <?php if ($q !== ''): ?> <?= __("per") ?> <strong><?= $e($q) ?></strong><?php endif; ?>
-                    <?php if ($level !== ''): ?> · <?= __("livello") ?>: <strong><?= $e($level) ?></strong><?php endif; ?>.
+                    <?php if ($level !== ''): ?> · <?= __("livello") ?>: <strong><?= $e($levelLabel[$level] ?? $level) ?></strong><?php endif; ?>.
                 </p>
             </div>
         <?php else: ?>

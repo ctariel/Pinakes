@@ -149,11 +149,15 @@ use App\Support\HtmlHelper;
                 <?= htmlspecialchars((string) ($p['created_at'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
               </td>
               <td class="px-5 py-4 text-right">
-                <form method="post"
-                      action="<?= htmlspecialchars(url('/admin/plugins/ncip-server/partners/' . (int) $p['id'] . '/delete'), ENT_QUOTES, 'UTF-8') ?>"
-                      onsubmit="return confirm(<?= json_encode(__('Eliminare questo partner?'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT) ?>)">
+                <form id="ncip-partner-delete-form-<?= (int) $p['id'] ?>" method="post"
+                      action="<?= htmlspecialchars(url('/admin/plugins/ncip-server/partners/' . (int) $p['id'] . '/delete'), ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
-                  <button type="submit"
+                  <button type="button"
+                          data-partner-name="<?= htmlspecialchars((string) ($p['name'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                          data-partner-isil="<?= htmlspecialchars((string) ($p['isil'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                          data-partner-endpoint="<?= htmlspecialchars((string) ($p['endpoint_url'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                          data-form-id="ncip-partner-delete-form-<?= (int) $p['id'] ?>"
+                          onclick="ncipPartnerConfirmDelete(this)"
                           class="inline-flex items-center px-3 py-1.5 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 text-xs font-medium rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors">
                     <i class="fas fa-trash-alt mr-1.5"></i>
                     <?= __("Elimina") ?>
@@ -170,3 +174,62 @@ use App\Support\HtmlHelper;
 
   </div>
 </div>
+
+<script>
+(function () {
+  var I18N = {
+    title: <?= json_encode(__('Eliminare partner?'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>,
+    orphanNote: <?= json_encode(__('Le transazioni associate resteranno come orfane.'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>,
+    confirmBtn: <?= json_encode(__('Elimina'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>,
+    cancelBtn: <?= json_encode(__('Annulla'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>,
+    isilLabel: <?= json_encode(__('Codice ISIL'), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>
+  };
+
+  function escapeHtml(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  window.ncipPartnerConfirmDelete = function (btn) {
+    var name = btn.dataset.partnerName || '';
+    var isil = btn.dataset.partnerIsil || '';
+    var endpoint = btn.dataset.partnerEndpoint || '';
+    var formId = btn.dataset.formId;
+    var form = formId ? document.getElementById(formId) : null;
+
+    var html = '<strong>' + escapeHtml(name) + '</strong>';
+    if (isil !== '') {
+      html += ' (' + escapeHtml(I18N.isilLabel) + ' ' + escapeHtml(isil) + ')';
+    }
+    if (endpoint !== '') {
+      html += '<br>' + escapeHtml(endpoint);
+    }
+    html += '<br><small>' + escapeHtml(I18N.orphanNote) + '</small>';
+
+    if (typeof Swal === 'undefined' || !Swal.fire) {
+      if (window.confirm(I18N.title + '\n' + name + (isil ? ' (' + I18N.isilLabel + ' ' + isil + ')' : '') + '\n' + I18N.orphanNote) && form) {
+        form.submit();
+      }
+      return;
+    }
+
+    Swal.fire({
+      title: I18N.title,
+      html: html,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: I18N.confirmBtn,
+      cancelButtonText: I18N.cancelBtn,
+      confirmButtonColor: '#dc2626'
+    }).then(function (result) {
+      if (result && result.isConfirmed && form) {
+        form.submit();
+      }
+    });
+  };
+})();
+</script>
