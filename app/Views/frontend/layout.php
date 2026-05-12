@@ -1723,6 +1723,7 @@ $htmlLang = substr($currentLocale, 0, 2);
             const searchInputs = document.querySelectorAll('.search-input');
             let searchTimeout;
             let currentSearchInput = null;
+            const searchViewAllLabel = <?= json_encode(__('Vedi tutti i risultati'), JSON_HEX_TAG) ?>;
 
             searchInputs.forEach(input => {
                 // Create search results container
@@ -1935,7 +1936,7 @@ $htmlLang = substr($currentLocale, 0, 2);
                 html += '<div class="search-section" style="padding: 0.75rem 1rem;">' +
                     '<a href="' + <?= json_encode(absoluteUrl($catalogRoute), JSON_HEX_TAG | JSON_HEX_AMP) ?> + '?search=' + encodeURIComponent(currentSearchInput.value) + '"' +
                     ' class="search-view-all" style="display: flex; align-items: center; justify-content: center; padding: 0.5rem; background: #f3f4f6; border-radius: 0.375rem; text-decoration: none; color: #000000; font-weight: 500; font-size: 0.875rem; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor=\'#e5e7eb\'" onmouseout="this.style.backgroundColor=\'#f3f4f6\'">' +
-                    'Vedi tutti i risultati <i class="fas fa-arrow-right" style="margin-left: 0.5rem; font-size: 0.75rem;"></i>' +
+                    searchViewAllLabel + ' <i class="fas fa-arrow-right" style="margin-left: 0.5rem; font-size: 0.75rem;"></i>' +
                     '</a>' +
                     '</div>';
 

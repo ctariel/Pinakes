@@ -594,9 +594,9 @@ class OaiPmhServerPlugin
             $row = $r->fetch_assoc();
             $r->free();
             if (!empty($row['e'])) {
-                $dt = \DateTime::createFromFormat('Y-m-d H:i:s', (string) $row['e']);
-                if ($dt !== false) {
-                    $earliest = $dt->format('Y-m-d\TH:i:s\Z');
+                $ts = strtotime((string) $row['e']);
+                if ($ts !== false) {
+                    $earliest = gmdate('Y-m-d\TH:i:s\Z', $ts);
                 }
             }
         }
@@ -608,9 +608,9 @@ class OaiPmhServerPlugin
             $row2 = $r2->fetch_assoc();
             $r2->free();
             if (!empty($row2['e'])) {
-                $dt2 = \DateTime::createFromFormat('Y-m-d H:i:s', (string) $row2['e']);
-                if ($dt2 !== false) {
-                    $ts2 = $dt2->format('Y-m-d\TH:i:s\Z');
+                $ts2raw = strtotime((string) $row2['e']);
+                if ($ts2raw !== false) {
+                    $ts2 = gmdate('Y-m-d\TH:i:s\Z', $ts2raw);
                     if ($ts2 < $earliest) { $earliest = $ts2; }
                 }
             }
@@ -1145,12 +1145,12 @@ class OaiPmhServerPlugin
 
         // 005 — Date/time of latest transaction
         $ts = strtotime((string) ($row['updated_at'] ?? 'now')) ?: time();
-        $this->marcControlField($xw, '005', date('YmdHis', $ts) . '.0');
+        $this->marcControlField($xw, '005', gmdate('YmdHis', $ts) . '.0');
 
         // 008 — Fixed-length data (minimal: year + language)
         $year = str_pad((string) ($row['anno_pubblicazione'] ?? ''), 4, ' ');
         $lang = str_pad($this->iso639_3ToMarc((string) ($row['lingua'] ?? '')), 3, ' ');
-        $this->marcControlField($xw, '008', date('ymd') . 's' . $year . '    it |||||||||' . $lang . '  d');
+        $this->marcControlField($xw, '008', gmdate('ymd') . 's' . $year . '    it |||||||||' . $lang . '  d');
 
         // 020 — ISBN
         if (!empty($row['isbn13'])) {
@@ -1631,7 +1631,7 @@ class OaiPmhServerPlugin
         $ts = strtotime((string) ($row['created_at'] ?? 'now')) ?: time();
         $xw->startElement('recordCreationDate');
         $xw->writeAttribute('encoding', 'w3cdtf');
-        $xw->text(date('Y-m-d', $ts));
+        $xw->text(gmdate('Y-m-d', $ts));
         $xw->endElement();
         $xw->endElement(); // recordInfo
 
@@ -1737,7 +1737,14 @@ class OaiPmhServerPlugin
         $xw->endElement(); // bib
 
         // ── <doc> — Digital file (from digital_assets table, if present) ───────
-        $asset = $this->fetchDigitalAsset((int) $row['id']);
+        // Prefer pre-fetched asset from fetchRecordsPage (avoids N+1 on list verbs).
+        // Fall back to per-record query for GetRecord / direct MAG download endpoint.
+        if (array_key_exists('_digital_asset', $row)) {
+            $preAsset = $row['_digital_asset'];
+            $asset = is_array($preAsset) ? $preAsset : null;
+        } else {
+            $asset = $this->fetchDigitalAsset((int) $row['id']);
+        }
         if ($asset !== null) {
             $baseUrl = !empty($magCfg['base_url']) ? rtrim((string) $magCfg['base_url'], '/') : '';
             $fileUrl = (string) $asset['url'];
@@ -2159,6 +2166,34 @@ class OaiPmhServerPlugin
             }
         }
 
+        // Batch-fetch digital_assets for all books on this page to avoid N+1 in writeBookMag().
+        // ORDER BY libro_id, id + first-wins replicates fetchDigitalAsset's ORDER BY id LIMIT 1.
+        $assetMap = [];
+        if (!empty($bookIds)) {
+            $ph4    = implode(',', array_fill(0, count($bookIds), '?'));
+            $types4 = str_repeat('i', count($bookIds));
+            $stmtA  = $this->db->prepare(
+                "SELECT libro_id, url, md5_hash, filesize, image_width, image_height, ppi, filetype
+                   FROM digital_assets WHERE libro_id IN ($ph4) ORDER BY libro_id, id"
+            );
+            if ($stmtA !== false) {
+                $stmtA->bind_param($types4, ...$bookIds);
+                $stmtA->execute();
+                $resA = $stmtA->get_result();
+                if ($resA instanceof \mysqli_result) {
+                    while ($rowA = $resA->fetch_assoc()) {
+                        $lid = (int) $rowA['libro_id'];
+                        // First-wins: keep only the row with the smallest id per libro_id.
+                        if (!isset($assetMap[$lid])) {
+                            $assetMap[$lid] = $rowA;
+                        }
+                    }
+                    $resA->free();
+                }
+                $stmtA->close();
+            }
+        }
+
         // Fetch MAG config once for the whole page (used by writeBookMag).
         $magConfig = !empty($bookIds) ? $this->fetchMagProjectConfig() : [];
 
@@ -2178,6 +2213,7 @@ class OaiPmhServerPlugin
                 $row['_publisher'] = $publisherMap[(int) ($row['editore_id'] ?? 0)] ?? null;
                 $row['_genre']     = $genreMap[(int) ($row['genere_id'] ?? 0)] ?? null;
                 $row['_mag_config'] = $magConfig;
+                $row['_digital_asset'] = $assetMap[$id] ?? null;
                 $result[] = $row;
             } elseif ($ref['_entity'] === 'archival_unit' && isset($auMap[$id])) {
                 $row = $auMap[$id];

@@ -320,6 +320,7 @@ $pluginSettings = $pluginSettings ?? [];
                                 <button
                                     data-plugin-id="<?= (int)$plugin['id'] ?>"
                                     data-plugin-name="<?= HtmlHelper::e(__($plugin['display_name'])) ?>"
+                                    aria-label="<?= HtmlHelper::e(__('Disinstalla plugin')) ?>"
                                     onclick="uninstallPlugin(this.dataset.pluginId, this.dataset.pluginName)"
                                     class="px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-all duration-200 text-sm font-medium">
                                     <i class="fas fa-trash"></i>
@@ -1119,7 +1120,7 @@ $pluginSettings = $pluginSettings ?? [];
             </label>
         </div>
         <div class="absolute top-2 right-2 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-            <button type="button" onclick="this.closest('.z39-server-row').remove(); checkEmptyServers();" class="text-red-500 hover:text-red-700 p-2">
+            <button type="button" aria-label="<?= htmlspecialchars(__('Elimina server'), ENT_QUOTES, 'UTF-8') ?>" onclick="this.closest('.z39-server-row').remove(); checkEmptyServers();" class="text-red-500 hover:text-red-700 p-2">
                 <i class="fas fa-trash"></i>
             </button>
         </div>
