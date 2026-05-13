@@ -602,6 +602,18 @@ class LanguagesController
 
         I18n::setLocale($normalized);
         $_SESSION['locale'] = $normalized;
+
+        // Propagate the new default to every user account so that
+        // AuthController and RememberMeMiddleware pick it up on the
+        // next login/token refresh.
+        try {
+            $stmt = $db->prepare("UPDATE utenti SET locale = ?");
+            $stmt->bind_param('s', $normalized);
+            $stmt->execute();
+            $stmt->close();
+        } catch (\Throwable $e) {
+            SecureLogger::error('LanguagesController: Unable to propagate locale to users: ' . $e->getMessage());
+        }
     }
 
     private function updateEnvLocale(string $locale): void
