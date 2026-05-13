@@ -5,7 +5,7 @@
 # Pinakes
 
 > **Open-Source Integrated Library System**
-> License: GPL-3  |  Languages: Italian, English, German
+> License: GPL-3  |  Languages: Italian, English, French, German
 
 Pinakes is a self-hosted, full-featured ILS for schools, municipalities, and private collections. It focuses on automation, extensibility, and a usable public catalog without requiring a web team.
 
@@ -21,6 +21,33 @@ Pinakes is a self-hosted, full-featured ILS for schools, municipalities, and pri
 
 [![Documentation](https://img.shields.io/badge/Documentazione-Docsify-4285f4?style=for-the-badge&logo=readthedocs&logoColor=white)](https://fabiodalez-dev.github.io/Pinakes/)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/fabiodalez)
+
+---
+
+## What's New in v0.7.6
+
+### French locale (fr_FR) and BNF scraping
+
+- **Full French translation** — 4,145 translated keys (100% coverage). Select `fr_FR` during the installation wizard to run Pinakes in French; existing installations can switch the default locale from Settings → Localisation.
+- **BNF SRU scraping** — the Z39 Server plugin now connects to the Bibliothèque nationale de France SRU endpoint and maps UNIMARC fields to Pinakes metadata (title, authors, publisher, ISBN, Dewey, subjects). Enable the Z39 Server plugin and add `sru.bnf.fr` as a source to start importing French bibliographic records.
+- **Migration hardening** — `migrate_0.7.5.sql` now uses `ON DUPLICATE KEY UPDATE` instead of `INSERT IGNORE`, ensuring `fr_FR` is correctly re-activated on upgrades where the language row already existed with `is_active=0`. `Language::setDefault()` now forces `is_active=1` on the target language to prevent an inconsistent state where the default locale is invisible to the resolution chain.
+- **Dev-schema guard** — `migrate_0.7.0.sql` detects installations where `author_authority_alternates` was created with the legacy column name `source_code` and automatically drops and recreates the table, preventing a fatal `ADD KEY` error during upgrade.
+
+### Archives: IIIF Presentation 3.0 and AtoM alignment ([#123](https://github.com/fabiodalez-dev/Pinakes/issues/123), [#121](https://github.com/fabiodalez-dev/Pinakes/issues/121))
+
+- **IIIF Presentation 3.0 manifests** — `GET /archives/{id}/iiif/manifest` returns a standards-compliant IIIF 3.0 manifest for each archival unit, exposing attached digitised documents as `Canvas` items with painting `Annotation`s. Works out of the box with Universal Viewer, Mirador, and other IIIF viewers.
+- **AtoM ISAD(G) area labels** — the Archives admin UI and public display now use canonical ISAD(G) area names (`Identity area`, `Context area`, `Content and structure area`, `Conditions of access and use area`, `Allied materials area`, `Notes area`) so records are immediately recognisable to users coming from AtoM or other archival systems.
+- **Multi-document uploads** — archival units now support multiple attached digitised files (PDF, JPEG, TIFF). Each file is stored with its original name, MIME type, and display order.
+
+### Security fixes
+
+- **Open-redirect via Host spoofing** — the OpenURL resolver built redirect URLs directly from `$request->getUri()->getHost()`, bypassing the `APP_TRUSTED_HOSTS` guard in `HtmlHelper::getBaseUrl()`. A crafted `Host:` header could redirect users to an attacker-controlled domain. Fixed to use `absoluteUrl()`.
+- **CQL injection in SRU client** — search terms containing `"` or `\` were embedded in CQL quoted-term syntax without escaping, producing malformed queries sent to external SRU endpoints (BNF, SUDOC). Fixed with proper backslash escaping per the CQL specification.
+
+### Compatibility fixes
+
+- **Windows updater** ([#130](https://github.com/fabiodalez-dev/Pinakes/issues/130)) — path separators are now normalised to forward slashes before version-file lookups; backslash paths on Windows caused the updater to silently fail.
+- **German routes** — added the missing `bibframe.book` route key to `routes_de_DE.json`, bringing German routing to parity with Italian, English, and French.
 
 ---
 
@@ -326,7 +353,7 @@ in `updater.md`.
 1. **Clone or download** this repository and upload all files to the root directory of your server.
 2. **Visit your site's root URL** in the browser — the guided installer starts automatically.
 3. **Provide database credentials** (database must be empty).
-4. **Select language** (Italian, English, or German).
+4. **Select language** (Italian, English, French, or German).
 5. **Configure** organization name, logo, and email notifications.
 6. **Create admin account** and start cataloging.
 
@@ -451,7 +478,7 @@ Automatic emails for:
 **WYSIWYG email template editor** with dynamic tags for record, user, and loan data.
 
 ### Public Catalog (OPAC)
-- **Responsive, multilingual frontend** (Italian, English, German)
+- **Responsive, multilingual frontend** (Italian, English, French, German)
 - **AJAX search** with instant results and relevance ranking
 - **AJAX filters**: genre, publisher, availability, publication year, format
 - **Patrons can leave reviews and ratings** (configurable)
