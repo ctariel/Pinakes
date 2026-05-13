@@ -71,19 +71,29 @@ if (!empty($row['date_start'])) {
     }
 }
 
-// Optional per-document assets. These columns are added by the
-// 0.5.9 migration's phase-5+ addenda — views degrade gracefully
-// when they're absent or empty.
-$coverUrl  = !empty($row['cover_image_path']) ? url((string) $row['cover_image_path']) : '';
-$docPath   = (string) ($row['document_path'] ?? '');
-$docMime   = (string) ($row['document_mime'] ?? '');
-$docName   = (string) ($row['document_filename'] ?? '');
-$docUrl    = $docPath !== '' ? url($docPath) : '';
-$isAudio   = $docMime !== '' && str_starts_with($docMime, 'audio/');
+// Optional per-document assets.
+$coverUrl   = !empty($row['cover_image_path']) ? url((string) $row['cover_image_path']) : '';
+/** @var list<array{id:int,file_path:string,file_mime:string,original_filename:string,sort_order:int}> $unit_files */
+$unit_files = $unit_files ?? [];
+// Backwards-compat: expose first file as legacy $docUrl for schema.org etc.
+$firstFile  = !empty($unit_files) ? $unit_files[0] : null;
+$docPath    = $firstFile !== null ? (string) $firstFile['file_path'] : (string) ($row['document_path'] ?? '');
+$docMime    = $firstFile !== null ? (string) $firstFile['file_mime'] : (string) ($row['document_mime'] ?? '');
+$docName    = $firstFile !== null ? (string) $firstFile['original_filename'] : (string) ($row['document_filename'] ?? '');
+$docUrl     = $docPath !== '' ? url($docPath) : '';
+$hasAudio   = (function () use ($unit_files, $docMime): bool {
+    foreach ($unit_files as $uf) {
+        if (str_starts_with((string) $uf['file_mime'], 'audio/')) {
+            return true;
+        }
+    }
+    return $docMime !== '' && str_starts_with($docMime, 'audio/');
+})();
+$docIsAudio = $docMime !== '' && str_starts_with($docMime, 'audio/');
 $specific  = (string) ($row['specific_material'] ?? '');
 ?>
 <link rel="stylesheet" href="<?= $e(url('/plugins/archives/assets/css/archives-public.css')) ?>">
-<?php if ($isAudio): ?>
+<?php if ($hasAudio): ?>
     <link rel="stylesheet" href="<?= $e(url('/assets/vendor/green-audio-player/css/green-audio-player.min.css')) ?>">
 <?php endif; ?>
 <?php
@@ -137,13 +147,14 @@ if (!empty($breadcrumb)) {
         $breadcrumb
     );
 }
+// FIX F042: emit absolute URLs in JSON-LD (Schema.org consumers require absolute URIs)
 if ($coverUrl !== '') {
-    $schema['image'] = $coverUrl;
+    $schema['image'] = absoluteUrl($coverUrl);
 }
 if ($docUrl !== '') {
     $schema['associatedMedia'] = [
-        '@type' => $isAudio ? 'AudioObject' : 'MediaObject',
-        'contentUrl' => $docUrl,
+        '@type' => $docIsAudio ? 'AudioObject' : 'MediaObject',
+        'contentUrl' => absoluteUrl($docUrl),
         'encodingFormat' => $docMime,
     ];
 }
@@ -194,9 +205,76 @@ $archiveSchema = json_encode($schema, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UN
                         </p>
                     <?php endif; ?>
 
-                    <?php if ($docUrl !== ''): ?>
+                    <?php if (!empty($unit_files)): ?>
+                        <?php
+                        // Inline byte formatter (no global helper exists outside Updater).
+                        $bytesStr = static function (int $bytes): string {
+                            if ($bytes < 0) {
+                                return '';
+                            }
+                            $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                            $i = 0;
+                            $val = (float) $bytes;
+                            while ($val >= 1024 && $i < count($units) - 1) {
+                                $val /= 1024;
+                                $i++;
+                            }
+                            return ($i === 0 ? (string) $bytes : number_format($val, 1)) . ' ' . $units[$i];
+                        };
+                        ?>
+                        <div class="archive-actions" style="justify-content:flex-start;flex-direction:column;gap:.5rem;">
+                            <?php foreach ($unit_files as $uf): ?>
+                                <?php
+                                $ufPath  = (string) $uf['file_path'];
+                                $ufMime  = (string) $uf['file_mime'];
+                                // Sanitize basename fallback to prevent leaking unexpected path
+                                // characters into the download="" attribute (defence-in-depth).
+                                $ufBaseFallback = preg_replace('/[^a-zA-Z0-9._-]/', '', basename($ufPath));
+                                if ($ufBaseFallback === null || $ufBaseFallback === '') {
+                                    $ufBaseFallback = __('file');
+                                }
+                                $ufName  = (string) ($uf['original_filename'] ?: $ufBaseFallback);
+                                $ufUrl   = url($ufPath);
+                                $ufAudio = str_starts_with($ufMime, 'audio/');
+                                // Compute file size on the fly. file_size column may not be
+                                // present in schema yet; @filesize() is guarded against
+                                // missing files and traversal-blocked paths.
+                                $ufSizeStr = '';
+                                if (isset($uf['file_size']) && (int) $uf['file_size'] > 0) {
+                                    $ufSizeStr = $bytesStr((int) $uf['file_size']);
+                                } elseif ($ufPath !== '') {
+                                    $ufAbsPath = __DIR__ . '/../../../../../public' . $ufPath;
+                                    $ufSizeBytes = @filesize($ufAbsPath);
+                                    if ($ufSizeBytes !== false && $ufSizeBytes > 0) {
+                                        $ufSizeStr = $bytesStr((int) $ufSizeBytes);
+                                    }
+                                }
+                                ?>
+                                <div class="d-flex align-items-center gap-2 w-100">
+                                    <?php if ($ufAudio): ?>
+                                        <div class="archive-player-wrap w-100">
+                                            <audio class="green-audio-player" controls preload="metadata"
+                                                   src="<?= $e($ufUrl) ?>"></audio>
+                                        </div>
+                                    <?php else: ?>
+                                        <a class="btn btn-primary btn-sm" href="<?= $e($ufUrl) ?>"
+                                           download="<?= $e($ufName) ?>">
+                                            <i class="fas fa-download me-1"></i><?= $e($ufName) ?>
+                                        </a>
+                                    <?php endif; ?>
+                                    <?php if ($ufMime !== ''): ?>
+                                        <span class="text-muted small ref-mono"><?= $e($ufMime) ?></span>
+                                    <?php endif; ?>
+                                    <?php if ($ufSizeStr !== ''): ?>
+                                        <span class="text-muted small"><?= $e($ufSizeStr) ?></span>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php elseif ($docUrl !== ''): ?>
+                        <!-- legacy fallback: document_path column -->
                         <div class="archive-actions" style="justify-content:flex-start;">
-                            <?php if ($isAudio): ?>
+                            <?php if ($docIsAudio): ?>
                                 <div class="archive-player-wrap w-100">
                                     <audio class="green-audio-player" controls preload="metadata"
                                            src="<?= $e($docUrl) ?>"></audio>
@@ -387,7 +465,7 @@ $archiveSchema = json_encode($schema, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UN
     </div>
 </section>
 
-<?php if ($isAudio): ?>
+<?php if ($hasAudio): ?>
 <script src="<?= $e(url('/assets/vendor/green-audio-player/js/green-audio-player.min.js')) ?>"></script>
 <script>
     (function() {

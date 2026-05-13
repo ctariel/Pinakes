@@ -74,17 +74,25 @@ $archivesAvailable = $archivesAvailable ?? false;
 $archivesRoute = $archivesRoute ?? '/archive';
 try {
     if (!$archivesAvailable && isset($container)) {
-        $dbConn = $container->get('db');
-        if ($dbConn instanceof mysqli) {
-            $pluginCheck = $dbConn->query("SELECT 1 FROM plugins WHERE name = 'archives' AND is_active = 1 LIMIT 1");
-            if ($pluginCheck instanceof mysqli_result && $pluginCheck->num_rows === 1) {
+        // Use PluginManager::isActive() (per-process cached) instead of an
+        // ad-hoc `SELECT 1 FROM plugins ...` query — this layout renders on
+        // every frontend page, including anonymous catalog crawls, so the
+        // raw lookup was an unconditional extra DB round-trip per request.
+        $archivesPluginActive = false;
+        if ($container->has('pluginManager')) {
+            /** @var \App\Support\PluginManager $pluginManager */
+            $pluginManager = $container->get('pluginManager');
+            $archivesPluginActive = $pluginManager->isActive('archives');
+        }
+        if ($archivesPluginActive) {
+            $dbConn = $container->get('db');
+            if ($dbConn instanceof mysqli) {
                 $unitCheck = $dbConn->query("SELECT 1 FROM archival_units WHERE deleted_at IS NULL LIMIT 1");
                 if ($unitCheck instanceof mysqli_result && $unitCheck->num_rows === 1) {
                     $archivesAvailable = true;
                 }
                 if ($unitCheck instanceof mysqli_result) { $unitCheck->free(); }
             }
-            if ($pluginCheck instanceof mysqli_result) { $pluginCheck->free(); }
         }
     }
     if ($archivesAvailable) {
@@ -1723,6 +1731,7 @@ $htmlLang = substr($currentLocale, 0, 2);
             const searchInputs = document.querySelectorAll('.search-input');
             let searchTimeout;
             let currentSearchInput = null;
+            const searchViewAllLabel = <?= json_encode(__('Vedi tutti i risultati'), JSON_HEX_TAG) ?>;
 
             searchInputs.forEach(input => {
                 // Create search results container
@@ -1805,11 +1814,18 @@ $htmlLang = substr($currentLocale, 0, 2);
                     return '#';
                 }
                 const trimmed = value.trim();
-                if (trimmed.startsWith('javascript:')) {
+                // Reject control characters (chr 0–31)
+                if (/[\x00-\x1F]/.test(trimmed)) {
                     return '#';
                 }
-                if (trimmed.startsWith('/') || trimmed.startsWith('http')) {
-                    return trimmed;
+                // Reject dangerous schemes and protocol-relative URLs
+                const lower = trimmed.toLowerCase();
+                if (lower.startsWith('data:') || lower.startsWith('file:') || trimmed.startsWith('//')) {
+                    return '#';
+                }
+                // Accept only https?:// absolute URLs or /path relative URLs
+                if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/')) {
+                    return escapeHtml(trimmed);
                 }
                 return '#';
             };
@@ -1840,6 +1856,7 @@ $htmlLang = substr($currentLocale, 0, 2);
                 const books = results.filter(r => r.type === 'book');
                 const authors = results.filter(r => r.type === 'author');
                 const publishers = results.filter(r => r.type === 'publisher');
+                const archives = results.filter(r => r.type === 'archive');
 
                 // Books section
                 if (books.length > 0) {
@@ -1905,11 +1922,29 @@ $htmlLang = substr($currentLocale, 0, 2);
                     html += '</div>';
                 }
 
+                // Archives section
+                if (archives.length > 0) {
+                    html += '<div class="search-section" style="padding: 0.75rem 0; border-bottom: 1px solid #f3f4f6;"><h6 class="search-section-title" style="margin: 0 1rem 0.5rem; font-size: 0.875rem; font-weight: 600; color: #374151;">' + __('Archivio') + '</h6>';
+                    archives.forEach(arc => {
+                        const arcUrl = sanitizeUrl(arc.url ?? '#');
+                        const arcLabel = escapeHtml(arc.label ?? '');
+                        const arcRef = escapeHtml(arc.identifier ?? '');
+                        html += '<a href="' + arcUrl + '" class="search-result-item archive-result" style="display: flex; align-items: center; padding: 0.75rem 1rem; text-decoration: none; color: #000000; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor=\'#f9fafb\'" onmouseout="this.style.backgroundColor=\'transparent\'">' +
+                            '<div style="width: 40px; height: 40px; background: #dcfce7; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 0.75rem; color: #16a34a; flex-shrink: 0;"><i class="fas fa-archive" aria-hidden="true"></i></div>' +
+                            '<div>' +
+                            '<div style="font-weight: 600; font-size: 0.875rem; margin-bottom: 0.125rem; color: #000000;">' + arcLabel + '</div>' +
+                            (arcRef ? '<div style="font-size: 0.75rem; color: #6b7280; font-family: monospace;">' + arcRef + '</div>' : '') +
+                            '</div>' +
+                            '</a>';
+                    });
+                    html += '</div>';
+                }
+
                 // Add "View all results" link
                 html += '<div class="search-section" style="padding: 0.75rem 1rem;">' +
                     '<a href="' + <?= json_encode(absoluteUrl($catalogRoute), JSON_HEX_TAG | JSON_HEX_AMP) ?> + '?search=' + encodeURIComponent(currentSearchInput.value) + '"' +
                     ' class="search-view-all" style="display: flex; align-items: center; justify-content: center; padding: 0.5rem; background: #f3f4f6; border-radius: 0.375rem; text-decoration: none; color: #000000; font-weight: 500; font-size: 0.875rem; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor=\'#e5e7eb\'" onmouseout="this.style.backgroundColor=\'#f3f4f6\'">' +
-                    'Vedi tutti i risultati <i class="fas fa-arrow-right" style="margin-left: 0.5rem; font-size: 0.75rem;"></i>' +
+                    searchViewAllLabel + ' <i class="fas fa-arrow-right" style="margin-left: 0.5rem; font-size: 0.75rem;"></i>' +
                     '</a>' +
                     '</div>';
 

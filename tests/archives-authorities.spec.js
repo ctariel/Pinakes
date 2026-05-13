@@ -215,7 +215,7 @@ test.describe.serial('Archives authorities CRUD + linking (#103 phase 2)', () =>
         // Destructive confirmations go through SweetAlert2 (archivesSwalConfirm
         // helper in views/authorities/show.php). Click the button, then the
         // swal confirm, which fires the real form submit.
-        await page.click('button:has-text("scollega"), button:has-text("unlink")');
+        await page.locator(`form[action$="/admin/archives/${fondsId}/authorities/${authId}/detach"] button`).click();
         await page.locator('.swal2-confirm').click();
         await page.waitForURL(new RegExp(`/admin/archives/${fondsId}$`), { timeout: 10000 });
 
@@ -229,7 +229,7 @@ test.describe.serial('Archives authorities CRUD + linking (#103 phase 2)', () =>
     test('9. Soft-delete the authority', async () => {
         const authId = dbQuery(`SELECT id FROM authority_records WHERE authorised_form = '${AUTH_NAME_UPDATED}' AND deleted_at IS NULL`);
         await page.goto(`${BASE}/admin/archives/authorities/${authId}`);
-        await page.click('button:has-text("Elimina"), button:has-text("Delete")');
+        await page.locator(`form[action$="/admin/archives/authorities/${authId}/delete"] button`).click();
         await page.locator('.swal2-confirm').click();
         await page.waitForURL(/\/admin\/archives\/authorities$/, { timeout: 10000 });
 

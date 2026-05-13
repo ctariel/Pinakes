@@ -26,7 +26,6 @@ use App\Support\HookManager;
 class Z39ServerPlugin
 {
     private mysqli $db;
-    private HookManager $hookManager;
     private ?int $pluginId = null;
     private static bool $routesRegistered = false;
 
@@ -38,7 +37,7 @@ class Z39ServerPlugin
         'server_database' => 'catalog',
         'max_records' => '100',
         'default_records' => '10',
-        'supported_formats' => 'marcxml,dc,mods,oai_dc',
+        'supported_formats' => 'marcxml,dc,mods,oai_dc,unimarcxml',
         'default_format' => 'marcxml',
         'require_authentication' => 'false',
         'rate_limit_enabled' => 'true',
@@ -78,12 +77,12 @@ class Z39ServerPlugin
      * Constructor - Initialize when plugin is loaded
      *
      * @param mysqli $db Database connection
-     * @param HookManager $hookManager Hook manager instance
+     * @param HookManager $hookManager Hook manager instance (required by PluginManager API)
+     * @phpstan-ignore constructor.unusedParameter
      */
     public function __construct(mysqli $db, HookManager $hookManager)
     {
         $this->db = $db;
-        $this->hookManager = $hookManager;
 
         // Get plugin ID from database
         $result = $db->query("SELECT id FROM plugins WHERE name = 'z39-server' LIMIT 1");
@@ -103,14 +102,17 @@ class Z39ServerPlugin
     }
 
     /**
-     * Hook: Executed during plugin installation
-     * Creates necessary tables and sets up initial configuration
+     * Idempotent schema creation — called by both onInstall() and onActivate()
+     * so tables are guaranteed to exist after any upgrade path.
+     *
+     * @return array{created: string[], failed: string[]}
      */
-    public function onInstall(): void
+    public function ensureSchema(): array
     {
-        // Create table for SRU access logs
-        $this->db->query("
-            CREATE TABLE IF NOT EXISTS z39_access_logs (
+        $result = ['created' => [], 'failed' => []];
+
+        $tables = [
+            'z39_access_logs' => "CREATE TABLE IF NOT EXISTS z39_access_logs (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 ip_address VARCHAR(45) NOT NULL COMMENT 'Client IP address',
                 user_agent TEXT COMMENT 'Client user agent',
@@ -125,12 +127,8 @@ class Z39ServerPlugin
                 INDEX idx_ip (ip_address),
                 INDEX idx_operation (operation),
                 INDEX idx_created (created_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ");
-
-        // Create table for rate limiting
-        $this->db->query("
-            CREATE TABLE IF NOT EXISTS z39_rate_limits (
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            'z39_rate_limits' => "CREATE TABLE IF NOT EXISTS z39_rate_limits (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 ip_address VARCHAR(45) NOT NULL,
                 request_count INT DEFAULT 1,
@@ -138,8 +136,32 @@ class Z39ServerPlugin
                 last_request DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY unique_ip_window (ip_address, window_start),
                 INDEX idx_window (window_start)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ");
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        ];
+
+        foreach ($tables as $table => $ddl) {
+            if ($this->db->query($ddl) !== false) {
+                $result['created'][] = $table;
+            } else {
+                $result['failed'][] = $table;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Hook: Executed during plugin installation
+     * Creates necessary tables and sets up initial configuration
+     */
+    public function onInstall(): void
+    {
+        $result = $this->ensureSchema();
+        if (!empty($result['failed'])) {
+            throw new \RuntimeException(
+                '[Z39Server] Schema install failed for: ' . implode(', ', $result['failed'])
+            );
+        }
 
         // Set default settings
         foreach (self::DEFAULT_SETTINGS as $key => $value) {
@@ -149,9 +171,8 @@ class Z39ServerPlugin
         // Set pre-configured Nordic SRU servers
         $this->setSetting('servers', json_encode(self::NORDIC_SERVERS, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
-        // Log installation
         $this->log('info', 'Z39.50/SRU Server Plugin installed successfully', [
-            'tables_created' => ['z39_access_logs', 'z39_rate_limits'],
+            'tables_created' => $result['created'],
             'default_settings' => count(self::DEFAULT_SETTINGS),
             'nordic_servers' => count(self::NORDIC_SERVERS),
         ]);
@@ -163,11 +184,24 @@ class Z39ServerPlugin
      */
     public function onActivate(): void
     {
+        $result = $this->ensureSchema();
+        if (!empty($result['failed'])) {
+            throw new \RuntimeException(
+                '[Z39Server] Schema activation failed for: ' . implode(', ', $result['failed'])
+            );
+        }
+
         // Register hooks
         $this->registerHooks();
 
         // Auto-upgrade: add Nordic servers if not already configured
         $this->ensureNordicServers();
+
+        // Ensure all default formats are present (non-destructive: preserves user additions)
+        $current = array_filter(array_map('trim', explode(',', $this->getSetting('supported_formats', 'marcxml'))));
+        $required = array_filter(array_map('trim', explode(',', self::DEFAULT_SETTINGS['supported_formats'])));
+        $merged = array_values(array_unique(array_merge($current, $required)));
+        $this->setSetting('supported_formats', implode(',', $merged));
 
         // Log activation
         $this->log('info', 'Z39.50/SRU Server Plugin activated', [
@@ -727,8 +761,10 @@ class Z39ServerPlugin
             return $new;
         }
 
+        // FIX F083: restore || === null branch (aligns with comment "fill empty fields" + api-book-scraper / open-library)
+        // Use array_key_exists so === null branch remains meaningful for PHPStan
         foreach ($new as $key => $value) {
-            if (!isset($existing[$key]) || $existing[$key] === '' || $existing[$key] === null) {
+            if (!array_key_exists($key, $existing) || $existing[$key] === '' || $existing[$key] === null) {
                 $existing[$key] = $value;
             }
         }
@@ -848,6 +884,7 @@ class Z39ServerPlugin
 
         // Remove ENC: prefix
         $payload = substr($encrypted, 4);
+        /** @var string|false $decoded */
         $decoded = base64_decode($payload);
 
         if ($decoded === false || strlen($decoded) < 28) {
@@ -855,13 +892,12 @@ class Z39ServerPlugin
             return null;
         }
 
-        // Get encryption key from environment (same order as PluginManager)
-        $rawKey = $_ENV['PLUGIN_ENCRYPTION_KEY']
-            ?? getenv('PLUGIN_ENCRYPTION_KEY')
-            ?? $_ENV['APP_KEY']
-            ?? getenv('APP_KEY')
-            ?? null;
-        if ($rawKey === null || $rawKey === '') {
+        // FIX F084: match PluginManager::getEncryptionKey() order — $_ENV first then getenv
+        // (phpdotenv createImmutable populates $_ENV but not getenv by default)
+        $envPluginKey = ($_ENV['PLUGIN_ENCRYPTION_KEY'] ?? '') ?: (getenv('PLUGIN_ENCRYPTION_KEY') ?: '');
+        $envAppKey    = ($_ENV['APP_KEY'] ?? '') ?: (getenv('APP_KEY') ?: '');
+        $rawKey = $envPluginKey !== '' ? $envPluginKey : ($envAppKey !== '' ? $envAppKey : null);
+        if ($rawKey === null) {
             // No key available, cannot decrypt
             \App\Support\SecureLogger::error('[Z39 Server Plugin] Cannot decrypt setting: PLUGIN_ENCRYPTION_KEY not available');
             return null;

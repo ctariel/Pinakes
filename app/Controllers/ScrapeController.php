@@ -75,6 +75,36 @@ class ScrapeController
 
     public function byIsbn(Request $request, Response $response): Response
     {
+        // FIX F003: Only release the PHP session lock when this is the top-level
+        // HTTP entry point (route /api/scrape/isbn). In-process callers like
+        // LibriController::fetchCover(), Support\ScrapingService::scrapeBookData()
+        // (invoked by LibraryThingImportController, CsvImportController,
+        // BulkEnrichmentService, etc.) also call byIsbn() in-process — calling
+        // session_write_close() there would silently discard subsequent
+        // $_SESSION writes by the caller (flash messages, CSRF rotations,
+        // success states would evaporate).
+        //
+        // The HTTP route handler in app/Routes/web.php sets the
+        // 'scrape.http_entry' request attribute to mark itself as the top-level
+        // HTTP call. In-process callers pass a mock request that lacks this
+        // attribute, so they keep the session lock held by their original
+        // top-level request — preserving correctness for $_SESSION writes after
+        // the scrape returns.
+        //
+        // Rationale for the original session_write_close(): release the lock so
+        // concurrent requests from the same session (e.g. browser navigation
+        // while a 10–30 s external API call is in flight) don't block waiting
+        // for the lock. This optimisation only matters for the HTTP endpoint;
+        // in-process callers are already serial within their own HTTP request,
+        // so closing the session for them is both unnecessary and harmful.
+        $isHttpEntry = (bool) $request->getAttribute('scrape.http_entry', false);
+        if ($isHttpEntry && session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+            // @session-unsafe: session is now closed for this request. Hook callbacks
+            // (\App\Support\Hooks::apply()) MUST NOT read OR write $_SESSION after this
+            // point — reads return a stale snapshot, writes are silently discarded.
+        }
+
         $rawIdentifier = trim((string)($request->getQueryParams()['isbn'] ?? ''));
         if ($rawIdentifier === '') {
             $response->getBody()->write(json_encode([

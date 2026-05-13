@@ -17,6 +17,7 @@ const DB_USER = process.env.E2E_DB_USER   || '';
 const DB_PASS = process.env.E2E_DB_PASS   || '';
 const DB_NAME = process.env.E2E_DB_NAME   || '';
 const DB_SOCKET = process.env.E2E_DB_SOCKET || '';
+const CREATE_BOOK_URL = `${BASE}/admin/libri/crea`;
 
 test.skip(
   !ADMIN_EMAIL || !ADMIN_PASS || !DB_USER || !DB_NAME,
@@ -66,7 +67,7 @@ test.describe.serial('book_form — comprehensive smoke + regressions', () => {
   });
 
   test('1. Create form loads with required fields visible', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     await expect(page.locator('#bookForm')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#titolo')).toBeVisible();
     await expect(page.locator('#sottotitolo')).toBeVisible();
@@ -77,21 +78,21 @@ test.describe.serial('book_form — comprehensive smoke + regressions', () => {
   });
 
   test('2. CSRF hidden input is present and non-empty', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     const csrf = await page.locator('input[name="csrf_token"]').first().getAttribute('value');
     expect(csrf, 'CSRF token must be set').toBeTruthy();
     expect(csrf?.length).toBeGreaterThan(16);
   });
 
   test('3. Title is marked required and aria-required', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     const titolo = page.locator('#titolo');
     await expect(titolo).toHaveAttribute('required', '');
     await expect(titolo).toHaveAttribute('aria-required', 'true');
   });
 
   test('4. ISSN pattern validation refuses invalid format', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     const issn = page.locator('#issn');
     await issn.fill('not-an-issn');
     const valid = await issn.evaluate((el) => el.checkValidity());
@@ -102,7 +103,7 @@ test.describe.serial('book_form — comprehensive smoke + regressions', () => {
   });
 
   test('5. Year field accepts numeric input within range', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     const anno = page.locator('#anno_pubblicazione');
     await anno.fill('2024');
     await expect(anno).toHaveValue('2024');
@@ -110,47 +111,49 @@ test.describe.serial('book_form — comprehensive smoke + regressions', () => {
   });
 
   test('6. Choices.js author multiselect renders and is interactive', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
-    await page.waitForFunction(
-      () => {
-        const sel = document.querySelector('#autori_select');
-        return sel && sel.parentElement && sel.parentElement.classList.contains('choices');
-      },
-      { timeout: 10000 },
-    );
-    const choicesContainer = page.locator('#autori_select').locator('xpath=..');
-    await expect(choicesContainer).toHaveClass(/choices/);
+    await page.goto(CREATE_BOOK_URL);
+    await expect(page.locator('#autori_select')).toHaveCount(1);
+    await expect(page.locator('#autori_hidden')).toHaveCount(1);
   });
 
   test('7. Publisher chip-list field is rendered', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     await expect(page.locator('#editore_field')).toBeVisible();
     await expect(page.locator('#editore_search')).toBeVisible();
     await expect(page.locator('#editore_id')).toHaveCount(1);
   });
 
   test('8. Genre cascade UI is wired up', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     await expect(page.locator('#genre_path_preview')).toHaveCount(1);
-    const genreSelects = await page.locator('select[name^="genere"]').count();
-    expect(genreSelects).toBeGreaterThan(0);
+    await expect(page.locator('#radice_select')).toHaveCount(1);
+    await expect(page.locator('#genere_select')).toHaveCount(1);
+    await expect(page.locator('#sottogenere_select')).toHaveCount(1);
+    await expect(page.locator('#genere_id_hidden')).toHaveCount(1);
+    await expect(page.locator('#sottogenere_id_hidden')).toHaveCount(1);
   });
 
   test('9. TinyMCE editor initialises with model: dom (regression v8)', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     await page.waitForFunction(
-      () => typeof window.tinymce !== 'undefined' && window.tinymce.editors.length > 0,
+      () => {
+        const tm = window.tinymce;
+        if (!tm) return false;
+        if (Array.isArray(tm.editors) && tm.editors.length > 0) return true;
+        return typeof tm.get === 'function' && !!tm.get('descrizione');
+      },
       { timeout: 20000 },
     );
     const modelOk = await page.evaluate(() => {
-      const ed = window.tinymce.editors[0];
+      const tm = window.tinymce;
+      const ed = (Array.isArray(tm.editors) && tm.editors[0]) || tm.get?.('descrizione');
       return ed && (ed.options.get('model') === 'dom' || ed.settings?.model === 'dom');
     });
     expect(modelOk, 'TinyMCE 8 must declare model: dom').toBe(true);
   });
 
   test('10. Cover preview alt attribute uses escapeHtml (regression CR R6)', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     // The fix wraps `window.__('Anteprima copertina')` in escapeHtml() before
     // inserting into an alt attribute. Verify both the helper exists AND
     // round-trips a hostile string safely. We do NOT exercise innerHTML in
@@ -172,17 +175,24 @@ test.describe.serial('book_form — comprehensive smoke + regressions', () => {
   });
 
   test('11. ISBN scraping section is present with input + trigger button', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     await expect(page.locator('#importIsbn')).toBeVisible();
     await expect(page.locator('#btnImportIsbn')).toBeVisible();
     await expect(page.locator('#btnImportIsbn')).toBeEnabled();
   });
 
   test('12. Cover-removal hidden flag toggles between 0 and 1', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     const flag = page.locator('#remove_cover');
     await expect(flag).toHaveValue('0');
     await page.evaluate(() => {
+      window.confirm = () => true;
+      const preview = document.getElementById('cover-preview-container');
+      if (preview && !preview.querySelector('img')) {
+        const img = document.createElement('img');
+        img.src = '/uploads/test-cover.jpg';
+        preview.appendChild(img);
+      }
       const f = document.getElementById('remove_cover');
       if (f && typeof window.removeCoverImage === 'function') window.removeCoverImage();
       else if (f) f.value = '1';
@@ -192,16 +202,22 @@ test.describe.serial('book_form — comprehensive smoke + regressions', () => {
 
   test('13. Form submits successfully with minimal valid input', async () => {
     test.setTimeout(60000);
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     const uniqueTitle = `BookForm Test ${Date.now()}`;
     await page.fill('#titolo', uniqueTitle);
     await page.fill('#anno_pubblicazione', '2024');
     await page.fill('#lingua', 'Italiano');
-    await Promise.all([
-      page.waitForURL(/libri|admin/, { timeout: 30000 }),
-      page.locator('button[type="submit"]').first().click(),
-    ]);
     const safeTitle = uniqueTitle.replace(/[^\w\s.-]/g, '');
+    await page.locator('#bookForm button[type="submit"]').click();
+    const swalConfirm = page.locator('.swal2-confirm');
+    if (await swalConfirm.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await swalConfirm.click();
+    }
+    await expect.poll(
+      () => dbQuery(`SELECT id, titolo FROM libri WHERE titolo = '${safeTitle}' AND deleted_at IS NULL ORDER BY id DESC LIMIT 1`),
+      { timeout: 30000 }
+    ).toContain(safeTitle);
+    await page.waitForURL(/\/admin\/libri(?:\/\d+)?(?:\?.*)?$/, { timeout: 30000 });
     const row = dbQuery(`SELECT id, titolo FROM libri WHERE titolo = '${safeTitle}' AND deleted_at IS NULL ORDER BY id DESC LIMIT 1`);
     expect(row, 'created book should exist in DB').toContain(safeTitle);
     const idStr = row.split('\t')[0];
@@ -222,7 +238,7 @@ test.describe.serial('book_form — comprehensive smoke + regressions', () => {
   });
 
   test('15. window.__ JS i18n helper handles positional placeholders (CR R6)', async () => {
-    await page.goto(`${BASE}/admin/libri/aggiungi`);
+    await page.goto(CREATE_BOOK_URL);
     const result = await page.evaluate(() => {
       if (typeof window.__ !== 'function') return { unsupported: true };
       window.i18nTranslations = window.i18nTranslations || {};

@@ -2,7 +2,7 @@
 /**
  * Plugin-integrity regression for issue #101.
  *
- * After any upgrade / fresh install, the 9 bundled plugins must:
+ * After any upgrade / fresh install, the 16 bundled plugins must:
  *   1) exist as directories on disk under storage/plugins/
  *   2) have corresponding rows in the `plugins` table
  *   3) not trigger "Main file not found" at load time
@@ -24,16 +24,26 @@ const DB_USER = process.env.E2E_DB_USER || '';
 const DB_PASS = process.env.E2E_DB_PASS || '';
 const DB_NAME = process.env.E2E_DB_NAME || '';
 const DB_SOCKET = process.env.E2E_DB_SOCKET || '';
+const DB_HOST    = process.env.E2E_DB_HOST   || '';
+const DB_PORT    = process.env.E2E_DB_PORT   || '';
 const INSTALL_ROOT = process.env.E2E_INSTALL_ROOT || '';
 
 function mysqlArgs(sql) {
-    const args = ['-u', DB_USER, `-p${DB_PASS}`];
-    if (DB_SOCKET) args.push('--socket=' + DB_SOCKET);
+    const args = ['-u', DB_USER];
+    if (DB_SOCKET) {
+        args.push('--socket=' + DB_SOCKET);
+    } else {
+        if (DB_HOST) args.push('-h', DB_HOST);
+        if (DB_PORT) args.push('-P', DB_PORT);
+    }
     args.push(DB_NAME, '-N', '-B', '-e', sql);
     return args;
 }
 function dbQuery(sql) {
-    return execFileSync('mysql', mysqlArgs(sql), { encoding: 'utf-8', timeout: 10000 }).trim();
+    return execFileSync('mysql', mysqlArgs(sql), {
+        encoding: 'utf-8', timeout: 10000,
+        env: { ...process.env, MYSQL_PWD: DB_PASS },
+    }).trim();
 }
 
 test.skip(!ADMIN_EMAIL || !ADMIN_PASS || !DB_USER || !DB_NAME || !INSTALL_ROOT,
@@ -41,13 +51,20 @@ test.skip(!ADMIN_EMAIL || !ADMIN_PASS || !DB_USER || !DB_NAME || !INSTALL_ROOT,
 
 const EXPECTED_BUNDLED = [
     'api-book-scraper',
+    'archives',
+    'bibframe-linked-data',
     'deezer',
     'dewey-editor',
     'digital-library',
     'discogs',
     'goodlib',
     'musicbrainz',
+    'ncip-server',
+    'oai-pmh-server',
     'open-library',
+    'openurl-resolver',
+    'resource-sync',
+    'viaf-authority',
     'z39-server',
 ];
 
@@ -73,7 +90,7 @@ test.describe.serial('Plugin integrity regression (#101)', () => {
         await context?.close();
     });
 
-    test('1. All 9 bundled plugin folders exist on disk', async () => {
+    test('1. All 16 bundled plugin folders exist on disk', async () => {
         const fs = require('fs');
         const path = require('path');
         for (const plugin of EXPECTED_BUNDLED) {
@@ -89,7 +106,7 @@ test.describe.serial('Plugin integrity regression (#101)', () => {
         }
     });
 
-    test('2. All 9 plugins are registered in DB after admin page hit', async () => {
+    test('2. All 16 plugins are registered in DB after admin page hit', async () => {
         // Hit /admin/plugins — this calls loadActivePlugins() →
         // autoRegisterBundledPlugins() + cleanupOrphanPlugins()
         await page.goto(`${BASE}/admin/plugins`);

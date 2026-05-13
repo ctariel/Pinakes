@@ -143,13 +143,24 @@ class ArchivesPlugin
         }
         $this->db->begin_transaction();
         try {
-            $this->registerHookInDb('app.routes.register',    'registerRoutes',       10);
-            $this->registerHookInDb('admin.menu.render',      'renderAdminMenuEntry', 10);
-            $this->registerHookInDb('search.unified.sources', 'addArchivalSources',   10);
+            $this->registerHookInDb('app.routes.register',              'registerRoutes',          10);
+            $this->registerHookInDb('admin.menu.render',              'renderAdminMenuEntry',    10);
+            $this->registerHookInDb('search.unified.sources',         'addArchivalSources',      10);
+            $this->registerHookInDb('frontend.catalog.archive_results', 'getPublicArchiveResults', 10);
             $this->db->commit();
         } catch (\Throwable $e) {
             $this->db->rollback();
             throw $e;
+        }
+    }
+
+    public function onInstall(): void
+    {
+        $result = $this->ensureSchema();
+        if (!empty($result['failed'])) {
+            throw new \RuntimeException(
+                '[Archives] Schema install failed for: ' . implode(', ', $result['failed'])
+            );
         }
     }
 
@@ -215,6 +226,7 @@ class ArchivesPlugin
         }
         $stmt = $this->db->prepare('DELETE FROM plugin_hooks WHERE plugin_id = ?');
         if ($stmt === false) {
+            SecureLogger::error('[Archives] deleteHooksFromDb prepare failed: ' . $this->db->error);
             return;
         }
         $stmt->bind_param('i', $this->pluginId);
@@ -224,11 +236,13 @@ class ArchivesPlugin
 
     /**
      * Execute the DDL for archival_units, authority_records, and the
-     * M:N link table. Errors are logged but don't abort activation —
-     * the admin can inspect the log and retry. Partial success is
-     * acceptable because each CREATE is IF NOT EXISTS + independent.
+     * M:N link table. CREATE TABLE failures are logged and reported
+     * via the returned 'failed' list without throwing. However, the
+     * subsequent migrateImageColumns() and migrateArchivalUnitFilesFK()
+     * calls throw RuntimeException on failure, which aborts activation.
      *
      * @return array{created: list<string>, failed: list<string>}
+     * @throws \RuntimeException If a schema migration step fails.
      */
     public function ensureSchema(): array
     {
@@ -237,14 +251,8 @@ class ArchivesPlugin
             'authority_records'       => self::ddlAuthorityRecords(),
             'archival_unit_authority' => self::ddlArchivalAuthorityLinks(),
             'autori_authority_link'   => self::ddlAutoriAuthorityLink(),
+            'archival_unit_files'     => self::ddlArchivalUnitFiles(),
         ];
-        // Phase 5 migration: add image columns to archival_units if they're
-        // not already there. Harmless no-op on fresh installs because the
-        // DDL above already declares them; essential on installs created
-        // before phase 5 where the CREATE TABLE IF NOT EXISTS won't touch
-        // an existing table.
-        $this->migrateImageColumns();
-
         $created = [];
         $failed = [];
 
@@ -267,16 +275,75 @@ class ArchivesPlugin
             }
         }
 
+        // Phase 5+ migration: ALTER TABLE to add columns missing from older
+        // installs. Must run AFTER CREATE TABLE so the table exists.
+        $this->migrateImageColumns();
+
+        // If archival_unit_files was created by migrate_0.7.4 without the FK
+        // (because archival_units didn't exist yet), add the FK now.
+        $this->migrateArchivalUnitFilesFK();
+
         return ['created' => $created, 'failed' => $failed];
     }
 
     /**
-     * Additive migration for phase 5 image-item columns. Checks the
-     * information_schema for each column and runs an ALTER TABLE ADD
-     * COLUMN when missing. Idempotent; safe to call on every activation.
+     * Ensures fk_archival_unit_files_unit exists on archival_unit_files.
+     * The v0.7.4 migration creates the table without FK when Archives was
+     * not yet activated; this method adds the FK idempotently at activation.
+     */
+    private function migrateArchivalUnitFilesFK(): void
+    {
+        $cnt = $this->db->query(
+            "SELECT COUNT(*) AS n FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+              WHERE TABLE_SCHEMA    = DATABASE()
+                AND TABLE_NAME      = 'archival_unit_files'
+                AND CONSTRAINT_NAME = 'fk_archival_unit_files_unit'
+                AND CONSTRAINT_TYPE = 'FOREIGN KEY'"
+        );
+        if (!($cnt instanceof \mysqli_result)) {
+            throw new \RuntimeException(
+                '[Archives] Unable to inspect fk_archival_unit_files_unit: ' . $this->db->error
+            );
+        }
+        $row = $cnt->fetch_assoc();
+        $cnt->free();
+        if ($row === null) {
+            throw new \RuntimeException('[Archives] Unable to read FK inspection result');
+        }
+        if ((int) ($row['n'] ?? 1) > 0) {
+            return;
+        }
+        if ($this->db->query(
+            'ALTER TABLE archival_unit_files
+               ADD CONSTRAINT fk_archival_unit_files_unit
+               FOREIGN KEY (unit_id) REFERENCES archival_units(id) ON DELETE CASCADE'
+        ) === false) {
+            throw new \RuntimeException(
+                '[Archives] Unable to add fk_archival_unit_files_unit: ' . $this->db->error
+            );
+        }
+    }
+
+    // FIX F028: docblock rewritten to match current behavior — migrates
+    // descriptive, image-item, IIIF, rights, ARK and version columns, and
+    // ensures the uq_ark_identifier UNIQUE KEY exists; throws RuntimeException
+    // on ALTER failure so callers can abort activation.
+    /**
+     * Additive migration for archival_units. Checks information_schema for
+     * each column listed below and runs ALTER TABLE ADD COLUMN when missing;
+     * also ensures the UNIQUE KEY uq_ark_identifier exists on in-place
+     * upgrades (fresh installs get it from ddlArchivalUnits()).
+     *
+     * Columns migrated include the original image-item set plus
+     * iiif_manifest_url, rights_statement_url, ark_identifier and
+     * version_note added in later phases.
      *
      * MySQL 5.7 / MariaDB 10.x don't support ADD COLUMN IF NOT EXISTS
      * consistently, which is why we pre-check instead.
+     *
+     * Throws \RuntimeException if any ALTER fails — callers should let it
+     * propagate so activation aborts rather than leaving a half-migrated
+     * schema behind.
      */
     private function migrateImageColumns(): void
     {
@@ -292,6 +359,10 @@ class ArchivesPlugin
             'document_path'        => 'VARCHAR(500) NULL',
             'document_mime'        => 'VARCHAR(100) NULL',
             'document_filename'    => 'VARCHAR(255) NULL',
+            'iiif_manifest_url'    => 'VARCHAR(2000) NULL',
+            'rights_statement_url' => 'VARCHAR(500) NULL',
+            'ark_identifier'       => 'VARCHAR(255) NULL',
+            'version_note'         => 'VARCHAR(500) NULL',
         ];
 
         // Fetch existing columns once.
@@ -311,6 +382,7 @@ class ArchivesPlugin
             return;
         }
 
+        $failures = [];
         foreach ($columns as $col => $definition) {
             if (isset($existing[$col])) {
                 continue;
@@ -320,15 +392,46 @@ class ArchivesPlugin
             $sql = 'ALTER TABLE archival_units ADD COLUMN ' . $col . ' ' . $definition;
             try {
                 if ($this->db->query($sql) === false) {
-                    SecureLogger::warning(
-                        '[Archives] migrate image columns: ALTER failed for ' . $col . ': ' . $this->db->error
-                    );
+                    $failures[] = $col . ': ' . $this->db->error;
                 }
             } catch (\Throwable $e) {
-                SecureLogger::error(
-                    '[Archives] migrate image columns: exception on ' . $col . ': ' . $e->getMessage()
-                );
+                $failures[] = $col . ': ' . $e->getMessage();
             }
+        }
+        if ($failures !== []) {
+            throw new \RuntimeException(
+                '[Archives] migrateImageColumns failed: ' . implode('; ', $failures)
+            );
+        }
+
+        // Ensure the UNIQUE KEY on ark_identifier exists (ddlArchivalUnits creates it
+        // on fresh installs; in-place upgrades need this idempotent guard).
+        $idxResult = $this->db->query(
+            "SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'archival_units'
+                AND INDEX_NAME = 'uq_ark_identifier'"
+        );
+        if ($idxResult instanceof \mysqli_result) {
+            $idxRow = $idxResult->fetch_assoc();
+            $idxResult->free();
+            if ((int) ($idxRow['cnt'] ?? 0) === 0) {
+                try {
+                    $result = $this->db->query(
+                        'ALTER TABLE archival_units ADD UNIQUE KEY uq_ark_identifier (ark_identifier)'
+                    );
+                    if ($result === false) {
+                        $failures[] = 'uq_ark_identifier: ' . $this->db->error;
+                    }
+                } catch (\Throwable $e) {
+                    $failures[] = 'uq_ark_identifier: ' . $e->getMessage();
+                }
+            }
+        }
+        if ($failures !== []) {
+            throw new \RuntimeException(
+                '[Archives] migrateImageColumns failed: ' . implode('; ', $failures)
+            );
         }
     }
 
@@ -442,6 +545,15 @@ class ArchivesPlugin
             array $args
         ) use ($plugin): ResponseInterface {
             return $plugin->removeAssetAction($request, $response, (int) $args['id']);
+        })->add($csrfMiddleware)->add($adminMiddleware);
+
+        // POST /admin/archives/{id}/files/{fileId}/delete — remove one file from archival_unit_files
+        $app->post('/admin/archives/{id:[0-9]+}/files/{fileId:[0-9]+}/delete', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->removeFileAction($request, $response, (int) $args['id'], (int) $args['fileId']);
         })->add($csrfMiddleware)->add($adminMiddleware);
 
         // ── Phase 2 — authority_records CRUD ────────────────────────────────
@@ -626,6 +738,38 @@ class ArchivesPlugin
             return $plugin->exportDublinCoreAction($request, $response, (int) $args['id']);
         });
 
+        // EAD3 per-unit export (public + admin).
+        $app->get('/admin/archives/{id:[0-9]+}/ead.xml', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->exportEad3Action($request, $response, (int) $args['id']);
+        })->add($adminMiddleware);
+        $app->get('/archives/{id:[0-9]+}/ead.xml', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->exportEad3Action($request, $response, (int) $args['id']);
+        });
+
+        // METS per-unit export (public + admin).
+        $app->get('/admin/archives/{id:[0-9]+}/mets.xml', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->exportMetsAction($request, $response, (int) $args['id']);
+        })->add($adminMiddleware);
+        $app->get('/archives/{id:[0-9]+}/mets.xml', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->exportMetsAction($request, $response, (int) $args['id']);
+        });
+
         // EAD3 bulk export (same admin-only access as MARCXML export).
         $app->get('/admin/archives/export.ead3', function (
             ServerRequestInterface $request,
@@ -648,6 +792,41 @@ class ArchivesPlugin
             ResponseInterface $response
         ) use ($plugin): ResponseInterface {
             return $plugin->oaiPmhAction($request, $response);
+        });
+
+        // ── IIIF Presentation 3.0 manifest ──────────────────────────────────
+        // Admin route (auth via AdminAuthMiddleware applied to /admin/*).
+        // Public route: consumed by Mirador, Universal Viewer, aggregators.
+        $app->get('/admin/archives/{id:[0-9]+}/manifest.json', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->iiifManifestAction($request, $response, (int) $args['id']);
+        })->add($adminMiddleware);
+
+        $app->get('/archives/{id:[0-9]+}/manifest.json', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->iiifManifestAction($request, $response, (int) $args['id']);
+        });
+
+        // IIIF Collection — root (all fondi) + per-unit sub-collections
+        $app->get('/archives/collection.json', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response
+        ) use ($plugin): ResponseInterface {
+            return $plugin->iiifCollectionAction($request, $response, null);
+        });
+
+        $app->get('/archives/{id:[0-9]+}/collection.json', function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+            array $args
+        ) use ($plugin): ResponseInterface {
+            return $plugin->iiifCollectionAction($request, $response, (int) $args['id']);
         });
 
         // Import form (GET) + submit (POST multipart/form-data)
@@ -709,7 +888,8 @@ class ArchivesPlugin
         $app->get('/archive', $publicIndex);
         $app->get('/archive/{slug:[a-z0-9-]+}-{id:[0-9]+}', $publicShow);
         $app->get('/archive/{id:[0-9]+}', $publicShow);
-        foreach (['it_IT', 'en_US', 'de_DE'] as $locale) {
+        // FIX F029: include fr_FR so the localised /archives route registers for French installs.
+        foreach (['it_IT', 'en_US', 'de_DE', 'fr_FR'] as $locale) {
             $base = $publicRouteFor($locale);
             if (!empty($base) && $base !== '/archive') {
                 $app->get($base, $publicIndex);
@@ -806,28 +986,71 @@ class ArchivesPlugin
         ServerRequestInterface $request,
         ResponseInterface $response
     ): ResponseInterface {
+        $params   = $request->getQueryParams();
+        $rawQuery = $params['q'] ?? '';
+        $rawLevel = $params['level'] ?? '';
+        $q        = is_string($rawQuery) ? trim($rawQuery) : '';
+        $level    = is_string($rawLevel) && isset(self::LEVELS[$rawLevel]) ? $rawLevel : '';
+
         $rows = [];
-        // Order by level first so fonds appear before their series/files/items,
-        // then by reference_code for stable ordering inside a level. A proper
-        // recursive CTE tree view is roadmapped for Phase 2.
-        $result = $this->db->query(
-            "SELECT id, parent_id, reference_code, level, constructed_title, formal_title,
-                    date_start, date_end, extent, language_codes, created_at
-               FROM archival_units
-              WHERE deleted_at IS NULL
-              ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
-              LIMIT 500"
-        );
-        if ($result instanceof \mysqli_result) {
-            while ($row = $result->fetch_assoc()) {
-                $rows[] = $row;
+        if ($q !== '' || $level !== '') {
+            $whereParts = ['deleted_at IS NULL'];
+            $bindTypes  = '';
+            $bindValues = [];
+
+            if ($q !== '') {
+                $pattern = $this->archiveSearchPattern($q);
+                $whereParts[] = '(reference_code LIKE ? OR constructed_title LIKE ? OR formal_title LIKE ? OR scope_content LIKE ?)';
+                $bindTypes  .= 'ssss';
+                $bindValues = array_merge($bindValues, [$pattern, $pattern, $pattern, $pattern]);
             }
-            $result->free();
+            if ($level !== '') {
+                $whereParts[] = 'level = ?';
+                $bindTypes  .= 's';
+                $bindValues[] = $level;
+            }
+
+            $sql  = "SELECT id, parent_id, reference_code, level, constructed_title, formal_title,
+                            date_start, date_end, extent, language_codes, created_at
+                       FROM archival_units
+                      WHERE " . implode(' AND ', $whereParts) . "
+                      ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
+                      LIMIT 500";
+            $stmt = $this->db->prepare($sql);
+            if ($stmt !== false) {
+                $stmt->bind_param($bindTypes, ...$bindValues);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                if ($result instanceof \mysqli_result) {
+                    while ($row = $result->fetch_assoc()) { $rows[] = $row; }
+                    $result->free();
+                }
+                $stmt->close();
+            }
         } else {
-            SecureLogger::warning('[Archives] index query failed: ' . $this->db->error);
+            // Order by level first so fonds appear before their series/files/items,
+            // then by reference_code for stable ordering inside a level.
+            $result = $this->db->query(
+                "SELECT id, parent_id, reference_code, level, constructed_title, formal_title,
+                        date_start, date_end, extent, language_codes, created_at
+                   FROM archival_units
+                  WHERE deleted_at IS NULL
+                  ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
+                  LIMIT 500"
+            );
+            if ($result instanceof \mysqli_result) {
+                while ($row = $result->fetch_assoc()) { $rows[] = $row; }
+                $result->free();
+            } else {
+                SecureLogger::warning('[Archives] index query failed: ' . $this->db->error);
+            }
         }
 
-        return $this->renderView($response, 'index', ['rows' => $rows]);
+        return $this->renderView($response, 'index', [
+            'rows'  => $rows,
+            'q'     => $q,
+            'level' => $level,
+        ]);
     }
 
     /**
@@ -871,8 +1094,10 @@ class ArchivesPlugin
                  formal_title, constructed_title, date_start, date_end,
                  extent, scope_content, language_codes,
                  specific_material, dimensions, color_mode,
-                 photographer, publisher, collection_name, local_classification)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 photographer, publisher, collection_name, local_classification,
+                 iiif_manifest_url, rights_statement_url,
+                 ark_identifier, version_note)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         if ($stmt === false) {
             SecureLogger::error('[Archives] store prepare failed: ' . $this->db->error);
@@ -881,13 +1106,14 @@ class ArchivesPlugin
         }
 
         $p = $this->nullableArchivalParams($values);
-        // 18 params: 1 int, 3 strings, 2 strings, 2 ints, 3 strings, 1 string (specific_material), 6 strings
-        // Layout: parent_id(i) ref(s) inst(s) level(s) formal(s) constructed(s) date_start(i) date_end(i)
-        //         extent(s) scope(s) lang(s) spec_material(s) dimensions(s) color_mode(s) photographer(s)
-        //         publisher(s) collection(s) local_class(s)  → 'isssssiisssssssssss'
-        //                                                      minus one 's' (counted 19) = 'isssssiissssssssss' (18)
+        // 22 params: parent_id(i) ref(s) inst(s) level(s) formal(s) constructed(s)
+        //            date_start(i) date_end(i) extent(s) scope(s) lang(s)
+        //            spec_material(s) dim(s) color(s) photographer(s)
+        //            publisher(s) collection(s) local_class(s) iiif_manifest(s) rights(s)
+        //            ark(s) version_note(s)
+        //            = 'isssssiissssssssssssss' (22 chars)
         $stmt->bind_param(
-            'isssssiissssssssss',
+            'isssssiissssssssssssss',
             $values['parent_id'],
             $values['reference_code'],
             $values['institution_code'],
@@ -905,7 +1131,11 @@ class ArchivesPlugin
             $p['photographer'],
             $p['publisher'],
             $p['collection_name'],
-            $p['local_classification']
+            $p['local_classification'],
+            $p['iiif_manifest_url'],
+            $p['rights_statement_url'],
+            $p['ark_identifier'],
+            $p['version_note']
         );
 
         if (!$stmt->execute()) {
@@ -962,6 +1192,10 @@ class ArchivesPlugin
             'publisher'            => $str('publisher'),
             'collection_name'      => $str('collection_name'),
             'local_classification' => $str('local_classification'),
+            'iiif_manifest_url'    => $str('iiif_manifest_url'),
+            'rights_statement_url' => $str('rights_statement_url'),
+            'ark_identifier'       => $str('ark_identifier'),
+            'version_note'         => $str('version_note'),
         ];
     }
 
@@ -978,6 +1212,8 @@ class ArchivesPlugin
             'formal_title', 'extent', 'scope_content',
             'dimensions', 'color_mode', 'photographer',
             'publisher', 'collection_name', 'local_classification',
+            'iiif_manifest_url', 'rights_statement_url',
+            'ark_identifier', 'version_note',
         ];
         $out = [];
         foreach ($nullable as $k) {
@@ -1034,12 +1270,20 @@ class ArchivesPlugin
         return $this->renderView($response, 'show', [
             'row'                  => $row,
             'parent_title'         => $parentTitle,
+            'unit_files'           => $this->fetchUnitFiles($id),
             'linked_authorities'   => $this->fetchAuthoritiesForArchivalUnit($id),
             'available_authorities'=> $this->listAllAuthorities(),
             'authority_roles'      => array_keys(self::AUTHORITY_ROLES),
             'headLinks'            => [
-                ['rel' => 'alternate', 'type' => 'application/rdf+xml', 'title' => 'Dublin Core',
+                ['rel' => 'alternate', 'type' => 'application/xml', 'title' => 'Dublin Core (OAI-DC)',
                  'href' => absoluteUrl('/archives/' . $id . '/dc.xml')],
+                ['rel' => 'alternate', 'type' => 'application/xml', 'title' => 'EAD3 Finding Aid',
+                 'href' => absoluteUrl('/archives/' . $id . '/ead.xml')],
+                ['rel' => 'alternate', 'type' => 'application/xml', 'title' => 'METS Package',
+                 'href' => absoluteUrl('/archives/' . $id . '/mets.xml')],
+                ['rel' => 'alternate', 'type' => 'application/ld+json;profile="http://iiif.io/api/presentation/3/context.json"',
+                 'title' => 'IIIF Manifest',
+                 'href' => absoluteUrl('/archives/' . $id . '/manifest.json')],
             ],
         ]);
     }
@@ -1098,7 +1342,9 @@ class ArchivesPlugin
                 formal_title = ?, constructed_title = ?, date_start = ?, date_end = ?,
                 extent = ?, scope_content = ?, language_codes = ?,
                 specific_material = ?, dimensions = ?, color_mode = ?,
-                photographer = ?, publisher = ?, collection_name = ?, local_classification = ?
+                photographer = ?, publisher = ?, collection_name = ?, local_classification = ?,
+                iiif_manifest_url = ?, rights_statement_url = ?,
+                ark_identifier = ?, version_note = ?
              WHERE id = ? AND deleted_at IS NULL'
         );
         if ($stmt === false) {
@@ -1108,18 +1354,15 @@ class ArchivesPlugin
         }
 
         $p = $this->nullableArchivalParams($values);
-        // 19 params: 18 INSERT-columns + id (int). Type string:
+        // 23 params: 22 SET-columns + id(i). Type string:
         //   parent_id(i) ref(s) inst(s) level(s) formal(s) constructed(s)
         //   date_start(i) date_end(i) extent(s) scope(s) lang(s)
-        //   spec_material(s) dimensions(s) color(s) photographer(s)
-        //   publisher(s) collection(s) local_class(s) id(i)
-        //   = 'isssssiisssssssssssi'   (no — count again)
-        //   Breakdown: i + s*3 + s*2 + i*2 + s*3 + s*7 + i = 'i' + 'sss' + 'ss' + 'ii' + 'sss' + 'sssssss' + 'i'
-        //   = 'isssss' + 'ii' + 'sssssssssss' + 'i' = 'isssssiisssssssssssi' = 20 chars for 19 params
-        //   Let's enumerate: i s s s s s i i s s s s s s s s s s i = 19 types, 'isssssiisssssssssssi' = 20, off by one.
-        //   Correct is 'isssssiissssssssssi' (19 chars).
+        //   spec_material(s) dim(s) color(s) photographer(s)
+        //   publisher(s) collection(s) local_class(s) iiif_manifest(s) rights(s)
+        //   ark(s) version_note(s) id(i)
+        //   = 'isssssiissssssssssssssi' (23 chars)
         $stmt->bind_param(
-            'isssssiissssssssssi',
+            'isssssiissssssssssssssi',
             $values['parent_id'],
             $values['reference_code'],
             $values['institution_code'],
@@ -1138,6 +1381,10 @@ class ArchivesPlugin
             $p['publisher'],
             $p['collection_name'],
             $p['local_classification'],
+            $p['iiif_manifest_url'],
+            $p['rights_statement_url'],
+            $p['ark_identifier'],
+            $p['version_note'],
             $id
         );
 
@@ -1174,13 +1421,18 @@ class ArchivesPlugin
             'UPDATE archival_units SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL'
         );
         if ($stmt === false) {
-            SecureLogger::error('[Archives] delete prepare failed: ' . $this->db->error);
-            return $response->withHeader('Location', '/admin/archives/' . $id)->withStatus(303);
+            SecureLogger::error('[Archives] delete prepare failed: ' . $this->db->error, ['id' => $id]);
+            return $response->withHeader('Location', url('/admin/archives/' . $id) /* FIX F032 */)->withStatus(303);
         }
         $stmt->bind_param('i', $id);
-        $stmt->execute();
+        if (!$stmt->execute()) {
+            SecureLogger::error('[Archives] destroyAction execute failed: ' . $stmt->error, ['id' => $id]);
+            $stmt->close();
+            return $response->withHeader('Location', url('/admin/archives/' . $id) /* FIX F032 */)
+                ->withStatus(303);
+        }
         $stmt->close();
-        return $response->withHeader('Location', '/admin/archives')->withStatus(303);
+        return $response->withHeader('Location', url('/admin/archives') /* FIX F032 */)->withStatus(303);
     }
 
     // ── Phase 5+ — cover + document asset upload ─────────────────────────
@@ -1289,12 +1541,16 @@ class ArchivesPlugin
             }
         }
         $stmt = $this->db->prepare($sql);
-        if ($stmt !== false) {
-            $stmt->bind_param('i', $id);
-            $stmt->execute();
-            $stmt->close();
+        if ($stmt === false) {
+            SecureLogger::error('[Archives] removeAssetAction prepare failed: ' . $this->db->error, ['id' => $id]);
+            return $response->withHeader('Location', url('/admin/archives/' . $id) /* FIX F032 */)->withStatus(303);
         }
-        return $response->withHeader('Location', '/admin/archives/' . $id)->withStatus(303);
+        $stmt->bind_param('i', $id);
+        if (!$stmt->execute()) {
+            SecureLogger::error('[Archives] removeAssetAction execute failed after file deletion: ' . $stmt->error, ['id' => $id, 'note' => 'physical file may be orphaned']);
+        }
+        $stmt->close();
+        return $response->withHeader('Location', url('/admin/archives/' . $id) /* FIX F032 */)->withStatus(303);
     }
 
     /**
@@ -1368,10 +1624,17 @@ class ArchivesPlugin
         }
         $ext = $mimeToExt[$mime];
 
-        // Remove any previous file to avoid orphans.
+        // FIX F031: defer legacy file removal until after the new file is
+        // successfully recorded. For 'cover' the UPDATE overwrites the same
+        // column so we can still unlink the predecessor here. For 'document'
+        // the new entry lives in archival_unit_files (a separate table) and
+        // the legacy document_path file must NOT be removed until the INSERT
+        // succeeds — otherwise an INSERT failure would also clean up the new
+        // file (further down) and orphan no reference, resulting in net data
+        // loss. The deferred unlink is performed below after a confirmed INSERT.
         $existingPathField = $kind === 'cover' ? 'cover_image_path' : 'document_path';
         $existingPath = (string) ($row[$existingPathField] ?? '');
-        if ($existingPath !== '') {
+        if ($kind === 'cover' && $existingPath !== '') {
             $oldFs = __DIR__ . '/../../../public' . $existingPath;
             if (is_file($oldFs)) {
                 @unlink($oldFs);
@@ -1413,18 +1676,175 @@ class ArchivesPlugin
             }
         } else {
             $clientName = (string) ($upload->getClientFilename() ?: ('archive-' . $id . '.' . $ext));
-            // Strip any path component from the client-provided name.
             $clientName = basename($clientName);
+            // Insert into archival_unit_files (multi-document table).
+            // sort_order = max existing + 1 so new files appear last.
             $stmt = $this->db->prepare(
-                'UPDATE archival_units SET document_path = ?, document_mime = ?, document_filename = ? WHERE id = ?'
+                'INSERT INTO archival_unit_files (unit_id, file_path, file_mime, original_filename, sort_order)
+                 SELECT ?, ?, ?, ?,
+                        COALESCE((SELECT MAX(sort_order) FROM archival_unit_files WHERE unit_id = ?), -1) + 1'
             );
             if ($stmt !== false) {
-                $stmt->bind_param('sssi', $relPath, $mime, $clientName, $id);
-                $stmt->execute();
+                $stmt->bind_param('isssi', $id, $relPath, $mime, $clientName, $id);
+                $inserted = $stmt->execute();
+                $insertErr = $stmt->error;
                 $stmt->close();
+                if ($inserted) {
+                    // Null out legacy single-document columns only after a confirmed
+                    // INSERT, so we don't orphan the existing reference on failure.
+                    $nullStmt = $this->db->prepare(
+                        'UPDATE archival_units SET document_path = NULL, document_mime = NULL, document_filename = NULL WHERE id = ?'
+                    );
+                    if ($nullStmt !== false) {
+                        $nullStmt->bind_param('i', $id);
+                        $nullStmt->execute();
+                        $nullStmt->close();
+                    }
+                    // FIX F031: now that the new archival_unit_files row is
+                    // committed and the legacy columns are cleared, the old
+                    // file on disk is orphaned and safe to unlink. Done last
+                    // so an earlier failure leaves the legacy file intact.
+                    if ($existingPath !== '') {
+                        $oldFs = __DIR__ . '/../../../public' . $existingPath;
+                        if (is_file($oldFs)) {
+                            @unlink($oldFs);
+                        }
+                    }
+                } else {
+                    $movedPath = $targetDirFs . '/' . $basename;
+                    if (is_file($movedPath)) {
+                        unlink($movedPath);
+                    }
+                    \App\Support\SecureLogger::error('[Archives] archival_unit_files INSERT failed', [
+                        'unit_id' => $id,
+                        'path'    => $relPath,
+                        'error'   => $insertErr,
+                    ]);
+                }
             }
         }
         return $response->withHeader('Location', '/admin/archives/' . $id)->withStatus(303);
+    }
+
+    /**
+     * Delete a single file from archival_unit_files and unlink it from disk.
+     * Requires the file to belong to the given unit (ownership check).
+     */
+    public function removeFileAction(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        int $unitId,
+        int $fileId
+    ): ResponseInterface {
+        $stmt = $this->db->prepare(
+            'SELECT file_path FROM archival_unit_files WHERE id = ? AND unit_id = ?'
+        );
+        if ($stmt === false) {
+            return $response->withHeader('Location', '/admin/archives/' . $unitId)->withStatus(303);
+        }
+        $stmt->bind_param('ii', $fileId, $unitId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $file   = $result instanceof \mysqli_result ? $result->fetch_assoc() : null;
+        $stmt->close();
+
+        if ($file === null) {
+            return $response->withHeader('Location', '/admin/archives/' . $unitId)->withStatus(303);
+        }
+
+        $filePath = (string) $file['file_path'];
+
+        $del = $this->db->prepare('DELETE FROM archival_unit_files WHERE id = ? AND unit_id = ?');
+        if ($del !== false) {
+            $del->bind_param('ii', $fileId, $unitId);
+            $deleted = $del->execute() && $del->affected_rows === 1;
+            $del->close();
+            if ($deleted && str_starts_with($filePath, '/uploads/archives/documents/')) {
+                $fsPath  = __DIR__ . '/../../../public' . $filePath;
+                $baseDir = realpath(__DIR__ . '/../../../public/uploads/archives/documents');
+                if ($baseDir !== false) {
+                    $real = realpath($fsPath);
+                    if ($real !== false && str_starts_with($real, $baseDir . DIRECTORY_SEPARATOR)) {
+                        @unlink($real);
+                    }
+                }
+            }
+        }
+
+        return $response->withHeader('Location', '/admin/archives/' . $unitId)->withStatus(303);
+    }
+
+    /**
+     * Return all files for a unit ordered by sort_order, id.
+     *
+     * @return list<array{id:int,file_path:string,file_mime:string,original_filename:string,sort_order:int}>
+     */
+    /**
+     * Bulk-fetch unit files for multiple units in a single query.
+     * Returns a map keyed by unit_id.
+     *
+     * @param list<int> $unitIds
+     * @return array<int, list<array{id:int,file_path:string,file_mime:string,original_filename:string,sort_order:int}>>
+     */
+    private function fetchUnitFilesForUnits(array $unitIds): array
+    {
+        if (empty($unitIds)) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($unitIds), '?'));
+        $stmt = $this->db->prepare(
+            "SELECT id, unit_id, file_path, file_mime, original_filename, sort_order
+               FROM archival_unit_files
+              WHERE unit_id IN ($placeholders)
+              ORDER BY unit_id, sort_order, id"
+        );
+        if ($stmt === false) {
+            return [];
+        }
+        $types = str_repeat('i', count($unitIds));
+        $stmt->bind_param($types, ...$unitIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map    = [];
+        if ($result instanceof \mysqli_result) {
+            while ($r = $result->fetch_assoc()) {
+                $uid = (int) $r['unit_id'];
+                $map[$uid][] = [
+                    'id'                => (int)    $r['id'],
+                    'file_path'         => (string) $r['file_path'],
+                    'file_mime'         => (string) $r['file_mime'],
+                    'original_filename' => (string) $r['original_filename'],
+                    'sort_order'        => (int)    $r['sort_order'],
+                ];
+            }
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    private function fetchUnitFiles(int $unitId): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT id, file_path, file_mime, original_filename, sort_order
+               FROM archival_unit_files
+              WHERE unit_id = ?
+              ORDER BY sort_order, id'
+        );
+        if ($stmt === false) {
+            return [];
+        }
+        $stmt->bind_param('i', $unitId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        /** @var list<array{id:int,file_path:string,file_mime:string,original_filename:string,sort_order:int}> $rows */
+        $rows = [];
+        if ($result instanceof \mysqli_result) {
+            while ($row = $result->fetch_assoc()) {
+                $rows[] = $row;
+            }
+        }
+        $stmt->close();
+        return $rows;
     }
 
     // ── Phase 2 — authority_records handlers ────────────────────────────
@@ -1688,13 +2108,18 @@ class ArchivesPlugin
             'UPDATE authority_records SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL'
         );
         if ($stmt === false) {
-            SecureLogger::error('[Archives] authority delete prepare failed: ' . $this->db->error);
-            return $response->withHeader('Location', '/admin/archives/authorities/' . $id)->withStatus(303);
+            SecureLogger::error('[Archives] authority delete prepare failed: ' . $this->db->error, ['id' => $id]);
+            return $response->withHeader('Location', url('/admin/archives/authorities/' . $id) /* FIX F032 */)->withStatus(303);
         }
         $stmt->bind_param('i', $id);
-        $stmt->execute();
+        if (!$stmt->execute()) {
+            SecureLogger::error('[Archives] authorityDestroyAction execute failed: ' . $stmt->error, ['id' => $id]);
+            $stmt->close();
+            return $response->withHeader('Location', url('/admin/archives/authorities/' . $id) /* FIX F032 */)
+                ->withStatus(303);
+        }
         $stmt->close();
-        return $response->withHeader('Location', '/admin/archives/authorities')->withStatus(303);
+        return $response->withHeader('Location', url('/admin/archives/authorities') /* FIX F032 */)->withStatus(303);
     }
 
     /**
@@ -1725,14 +2150,18 @@ class ArchivesPlugin
                 );
                 if ($stmt !== false) {
                     $stmt->bind_param('iis', $archivalUnitId, $authorityId, $role);
-                    $stmt->execute();
+                    if (!$stmt->execute()) {
+                        SecureLogger::error('[Archives] attachAuthorityAction execute failed: ' . $stmt->error, ['archival_unit_id' => $archivalUnitId, 'authority_id' => $authorityId]);
+                    }
                     $stmt->close();
+                } else {
+                    SecureLogger::error('[Archives] attachAuthorityAction prepare failed: ' . $this->db->error, ['archival_unit_id' => $archivalUnitId, 'authority_id' => $authorityId]);
                 }
             }
         }
 
         return $response
-            ->withHeader('Location', '/admin/archives/' . $archivalUnitId)
+            ->withHeader('Location', url('/admin/archives/' . $archivalUnitId) /* FIX F032 */)
             ->withStatus(303);
     }
 
@@ -1786,12 +2215,16 @@ class ArchivesPlugin
             );
             if ($stmt !== false) {
                 $stmt->bind_param('ii', $autoreId, $authorityId);
-                $stmt->execute();
+                if (!$stmt->execute()) {
+                    SecureLogger::error('[Archives] linkAutoreAction execute failed: ' . $stmt->error, ['autori_id' => $autoreId, 'authority_id' => $authorityId]);
+                }
                 $stmt->close();
+            } else {
+                SecureLogger::error('[Archives] linkAutoreAction prepare failed: ' . $this->db->error, ['autori_id' => $autoreId, 'authority_id' => $authorityId]);
             }
         }
         return $response
-            ->withHeader('Location', '/admin/archives/authorities/' . $authorityId)
+            ->withHeader('Location', url('/admin/archives/authorities/' . $authorityId) /* FIX F032 */)
             ->withStatus(303);
     }
 
@@ -1990,6 +2423,46 @@ class ArchivesPlugin
     }
 
     /**
+     * Batch-fetch authorities for multiple archival units in a single query.
+     * Eliminates N+1 queries in export loops that iterate over many units.
+     *
+     * @param int[] $unitIds
+     * @return array<int, list<array<string, mixed>>>  unit_id → list of authority rows
+     */
+    private function fetchAuthoritiesForUnits(array $unitIds): array
+    {
+        if (empty($unitIds)) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($unitIds), '?'));
+        $types = str_repeat('i', count($unitIds));
+        $sql = 'SELECT aua.archival_unit_id, ar.id, ar.type, ar.authorised_form, ar.dates_of_existence, aua.role
+                FROM archival_unit_authority aua
+                JOIN authority_records ar ON ar.id = aua.authority_id AND ar.deleted_at IS NULL
+                WHERE aua.archival_unit_id IN (' . $placeholders . ')
+                ORDER BY aua.archival_unit_id, ar.authorised_form';
+        $stmt = $this->db->prepare($sql);
+        if ($stmt === false) {
+            SecureLogger::error('[Archives] fetchAuthoritiesForUnits prepare failed: ' . $this->db->error);
+            return [];
+        }
+        $stmt->bind_param($types, ...$unitIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        if ($result instanceof \mysqli_result) {
+            while ($row = $result->fetch_assoc()) {
+                $unitId = (int) $row['archival_unit_id'];
+                unset($row['archival_unit_id']);
+                $map[$unitId][] = $row;
+            }
+            $result->free();
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    /**
      * Return every non-deleted authority as a flat list, so the attach
      * form's <select> can offer them. Limited to 500 for safety; phase 3
      * will introduce a type-ahead search instead.
@@ -2038,37 +2511,98 @@ class ArchivesPlugin
 
     /**
      * GET /archivio (it) / /archive (en) / /archiv (de) — public index.
-     * Lists all root-level (parent_id IS NULL) archival_units. Anonymous
-     * browsing; no auth required.
+     * Lists root-level archival_units, or full-text search results when ?q= is set.
      */
     public function publicIndexAction(
         ServerRequestInterface $request,
         ResponseInterface $response
     ): ResponseInterface {
+        $params    = $request->getQueryParams();
+        $rawQ      = $params['q'] ?? '';
+        $rawLevel  = $params['level'] ?? '';
+        $q         = is_string($rawQ) ? trim($rawQ) : '';
+        $level     = is_string($rawLevel) && isset(self::LEVELS[$rawLevel]) ? $rawLevel : '';
+        $dateFrom  = (string) ($params['date_from'] ?? '');
+        $dateTo    = (string) ($params['date_to'] ?? '');
+
         $rows = [];
-        $stmt = $this->db->prepare(
-            "SELECT id, reference_code, level, formal_title, constructed_title,
-                    date_start, date_end, extent, scope_content, specific_material
-               FROM archival_units
-              WHERE deleted_at IS NULL AND parent_id IS NULL
-              ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
-              LIMIT 500"
-        );
-        if ($stmt !== false) {
-            $stmt->execute();
-            $result = $stmt->get_result();
-            if ($result instanceof \mysqli_result) {
-                while ($r = $result->fetch_assoc()) {
-                    $rows[] = $r;
-                }
-                $result->free();
+        $isSearch = $q !== '' || $level !== '' || $dateFrom !== '' || $dateTo !== '';
+
+        if ($isSearch) {
+            $whereParts = ['deleted_at IS NULL'];
+            $bindTypes  = '';
+            $bindValues = [];
+
+            if ($q !== '') {
+                $pattern = $this->archiveSearchPattern($q);
+                $whereParts[] = '(reference_code LIKE ? OR constructed_title LIKE ? OR formal_title LIKE ? OR scope_content LIKE ?)';
+                $bindTypes  .= 'ssss';
+                $bindValues = array_merge($bindValues, [$pattern, $pattern, $pattern, $pattern]);
             }
-            $stmt->close();
+            if ($level !== '') {
+                $whereParts[] = 'level = ?';
+                $bindTypes  .= 's';
+                $bindValues[] = $level;
+            }
+            if ($dateFrom !== '' && ctype_digit($dateFrom)) {
+                $whereParts[] = '(date_end IS NULL OR date_end >= ?)';
+                $bindTypes  .= 'i';
+                $bindValues[] = (int) $dateFrom;
+            }
+            if ($dateTo !== '' && ctype_digit($dateTo)) {
+                $whereParts[] = '(date_start IS NULL OR date_start <= ?)';
+                $bindTypes  .= 'i';
+                $bindValues[] = (int) $dateTo;
+            }
+
+            $sql  = "SELECT id, reference_code, level, formal_title, constructed_title,
+                            date_start, date_end, extent, scope_content, specific_material
+                       FROM archival_units
+                      WHERE " . implode(' AND ', $whereParts) . "
+                      ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
+                      LIMIT 200";
+            $stmt = $this->db->prepare($sql);
+            if ($stmt !== false) {
+                if ($bindTypes !== '') {
+                    $stmt->bind_param($bindTypes, ...$bindValues);
+                }
+                $stmt->execute();
+                $result = $stmt->get_result();
+                if ($result instanceof \mysqli_result) {
+                    while ($r = $result->fetch_assoc()) { $rows[] = $r; }
+                    $result->free();
+                }
+                $stmt->close();
+            }
+        } else {
+            $stmt = $this->db->prepare(
+                "SELECT id, reference_code, level, formal_title, constructed_title,
+                        date_start, date_end, extent, scope_content, specific_material
+                   FROM archival_units
+                  WHERE deleted_at IS NULL AND parent_id IS NULL
+                  ORDER BY FIELD(level, 'fonds','series','file','item'), reference_code ASC
+                  LIMIT 500"
+            );
+            if ($stmt !== false) {
+                $stmt->execute();
+                $result = $stmt->get_result();
+                if ($result instanceof \mysqli_result) {
+                    while ($r = $result->fetch_assoc()) { $rows[] = $r; }
+                    $result->free();
+                }
+                $stmt->close();
+            }
         }
+
         $viewPath = __DIR__ . '/views/public/index.php';
         return $this->renderPublic($response, $viewPath, [
-            'rows' => $rows,
-            'total' => count($rows),
+            'rows'      => $rows,
+            'total'     => count($rows),
+            'q'         => $q,
+            'level'     => $level,
+            'date_from' => $dateFrom,
+            'date_to'   => $dateTo,
+            'isSearch'  => $isSearch,
         ]);
     }
 
@@ -2160,6 +2694,7 @@ class ArchivesPlugin
             'children'    => $children,
             'authorities' => $authorities,
             'breadcrumb'  => $breadcrumb,
+            'unit_files'  => $this->fetchUnitFiles($id),
         ]);
     }
 
@@ -2222,8 +2757,17 @@ class ArchivesPlugin
         $archiveSchema = $archiveSchema ?? null;
         $headLinks = [];
         if (isset($data['row']['id'])) {
-            $headLinks[] = ['rel' => 'alternate', 'type' => 'application/rdf+xml', 'title' => 'Dublin Core',
-                            'href' => absoluteUrl('/archives/' . (int) $data['row']['id'] . '/dc.xml')];
+            $unitId = (int) $data['row']['id'];
+            $headLinks[] = ['rel' => 'alternate', 'type' => 'application/xml', 'title' => 'Dublin Core (OAI-DC)',
+                            'href' => absoluteUrl('/archives/' . $unitId . '/dc.xml')];
+            $headLinks[] = ['rel' => 'alternate', 'type' => 'application/xml', 'title' => 'EAD3 Finding Aid',
+                            'href' => absoluteUrl('/archives/' . $unitId . '/ead.xml')];
+            $headLinks[] = ['rel' => 'alternate', 'type' => 'application/xml', 'title' => 'METS Package',
+                            'href' => absoluteUrl('/archives/' . $unitId . '/mets.xml')];
+            $headLinks[] = ['rel' => 'alternate',
+                            'type' => 'application/ld+json;profile="http://iiif.io/api/presentation/3/context.json"',
+                            'title' => 'IIIF Manifest',
+                            'href' => absoluteUrl('/archives/' . $unitId . '/manifest.json')];
         }
 
         $layoutPath = __DIR__ . '/../../../app/Views/frontend/layout.php';
@@ -2379,6 +2923,8 @@ class ArchivesPlugin
         $xw->writeElementNs('sru', 'numberOfRecords', null, (string) $total);
 
         if (!empty($rows)) {
+            $sruUnitIds = array_map(fn(array $r): int => (int) $r['id'], $rows);
+            $sruAuthoritiesMap = $this->fetchAuthoritiesForUnits($sruUnitIds);
             $xw->startElementNs('sru', 'records', null);
             $position = $startRecord;
             foreach ($rows as $row) {
@@ -2386,7 +2932,7 @@ class ArchivesPlugin
                 $xw->writeElementNs('sru', 'recordSchema', null, 'info:srw/schema/1/marcxml-v1.1');
                 $xw->writeElementNs('sru', 'recordPacking', null, 'xml');
                 $xw->startElementNs('sru', 'recordData', null);
-                $authorities = $this->fetchAuthoritiesForArchivalUnit((int) $row['id']);
+                $authorities = $sruAuthoritiesMap[(int) $row['id']] ?? [];
                 $this->writeArchivalUnitMarcRecord($xw, $row, $authorities);
                 $xw->endElement();
                 $xw->writeElementNs('sru', 'recordPosition', null, (string) $position);
@@ -2618,13 +3164,16 @@ class ArchivesPlugin
             }
         }
 
+        $unitIds = array_map(fn(array $r): int => (int) $r['id'], $rows);
+        $authoritiesMap = $this->fetchAuthoritiesForUnits($unitIds);
+
         $xw = new \XMLWriter();
         $xw->openMemory();
         $xw->setIndent(true);
         $xw->startDocument('1.0', 'UTF-8');
         $xw->startElementNs(null, 'collection', 'http://www.loc.gov/MARC21/slim');
         foreach ($rows as $row) {
-            $auth = $this->fetchAuthoritiesForArchivalUnit((int) $row['id']);
+            $auth = $authoritiesMap[(int) $row['id']] ?? [];
             $this->writeArchivalUnitMarcRecord($xw, $row, $auth);
         }
         $xw->endElement();
@@ -3663,29 +4212,71 @@ class ArchivesPlugin
     private function searchArchivalUnits(string $q, int $limit): array
     {
         $rows = [];
+        $seen = [];
+
+        // Pass 1 — LIKE on reference_code. Short codes ("IT-MI-001", "1943")
+        // are below MySQL's ft_min_word_len threshold and would never surface
+        // in a FULLTEXT query, so we always probe reference_code with LIKE first.
+        $pattern = '%' . $q . '%';
         $stmt = $this->db->prepare(
             'SELECT id, reference_code, level, constructed_title, formal_title,
-                    date_start, date_end, extent,
-                    MATCH(formal_title, constructed_title, scope_content, archival_history)
-                        AGAINST (? IN NATURAL LANGUAGE MODE) AS score
+                    date_start, date_end, extent
                FROM archival_units
               WHERE deleted_at IS NULL
-                AND MATCH(formal_title, constructed_title, scope_content, archival_history)
-                        AGAINST (? IN NATURAL LANGUAGE MODE)
-              ORDER BY score DESC
+                AND reference_code LIKE ?
+              ORDER BY reference_code ASC
               LIMIT ?'
         );
-        if ($stmt === false) {
-            return $rows;
+        if ($stmt !== false) {
+            $stmt->bind_param('si', $pattern, $limit);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            if ($result instanceof \mysqli_result) {
+                while ($r = $result->fetch_assoc()) {
+                    $rows[] = $r;
+                    $seen[(int) $r['id']] = true;
+                }
+                $result->free();
+            }
+            $stmt->close();
         }
-        $stmt->bind_param('ssi', $q, $q, $limit);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        if ($result instanceof \mysqli_result) {
-            while ($r = $result->fetch_assoc()) { $rows[] = $r; }
-            $result->free();
+
+        // Pass 2 — FULLTEXT for title / scope / history (skips words < 3 chars).
+        $remaining = $limit - count($rows);
+        if ($remaining > 0 && strlen($q) >= 3) {
+            $stmt = $this->db->prepare(
+                'SELECT id, reference_code, level, constructed_title, formal_title,
+                        date_start, date_end, extent,
+                        MATCH(formal_title, constructed_title, scope_content, archival_history)
+                            AGAINST (? IN NATURAL LANGUAGE MODE) AS score
+                   FROM archival_units
+                  WHERE deleted_at IS NULL
+                    AND MATCH(formal_title, constructed_title, scope_content, archival_history)
+                            AGAINST (? IN NATURAL LANGUAGE MODE)
+                  ORDER BY score DESC
+                  LIMIT ?'
+            );
+            if ($stmt !== false) {
+                $stmt->bind_param('ssi', $q, $q, $remaining);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                if ($result instanceof \mysqli_result) {
+                    while ($r = $result->fetch_assoc()) {
+                        $rid = (int) $r['id'];
+                        if (!isset($seen[$rid])) {
+                            $rows[] = $r;
+                            $seen[$rid] = true;
+                            if (count($rows) >= $limit) {
+                                break;
+                            }
+                        }
+                    }
+                    $result->free();
+                }
+                $stmt->close();
+            }
         }
-        $stmt->close();
+
         return $rows;
     }
 
@@ -3923,13 +4514,9 @@ class ArchivesPlugin
      * @param array<string, mixed> $values
      * @return array<string, string>
      */
-    private function validateArchivalUnit(array $values, ?int $excludeId = null): array
+    private function validateArchivalUnit(array &$values, ?int $excludeId = null): array
     {
         $errors = [];
-        // $excludeId is reserved for reference_code uniqueness pre-check once
-        // we add it in phase 2 — currently enforced by the DB UNIQUE KEY and
-        // surfaced via errno 1062 in storeAction/updateAction.
-        unset($excludeId);
 
         $ref = (string) ($values['reference_code'] ?? '');
         if ($ref === '') {
@@ -3978,6 +4565,52 @@ class ArchivesPlugin
                 }
                 $check->close();
             }
+        }
+
+        foreach ([
+            'iiif_manifest_url'    => 2000,
+            'rights_statement_url' => 500,
+        ] as $field => $maxLen) {
+            $value = trim((string) ($values[$field] ?? ''));
+            if ($value !== '' && filter_var($value, FILTER_VALIDATE_URL) === false) {
+                $errors[$field] = 'Inserire un URL assoluto valido.';
+            } elseif (strlen($value) > $maxLen) {
+                $errors[$field] = 'Valore troppo lungo (max ' . $maxLen . ' caratteri).';
+            }
+        }
+
+        $ark = trim((string) ($values['ark_identifier'] ?? ''));
+        if ($ark !== '' && preg_match('#^https?://[^/]+/(ark:/.+)$#i', $ark, $m) === 1) {
+            $ark = $m[1];
+            $values['ark_identifier'] = $ark;
+        }
+        if (strlen($ark) > 255) {
+            $errors['ark_identifier'] = 'ARK identifier troppo lungo (max 255 caratteri).';
+        } elseif ($ark !== '' && preg_match('#^ark:/#i', $ark) !== 1) {
+            $errors['ark_identifier'] = "Inserire un identificatore ARK valido nel formato ark:/... (es. ark:/12345/abc123).";
+        } elseif ($ark !== '') {
+            $sql = 'SELECT id FROM archival_units WHERE ark_identifier = ?';
+            if ($excludeId !== null) {
+                $sql .= ' AND id != ?';
+            }
+            $arkCheck = $this->db->prepare($sql);
+            if ($arkCheck !== false) {
+                if ($excludeId !== null) {
+                    $arkCheck->bind_param('si', $ark, $excludeId);
+                } else {
+                    $arkCheck->bind_param('s', $ark);
+                }
+                $arkCheck->execute();
+                $res = $arkCheck->get_result();
+                if ($res !== false && $res->num_rows > 0) {
+                    $errors['ark_identifier'] = 'ARK identifier già utilizzato da un altro record.';
+                }
+                $arkCheck->close();
+            }
+        }
+
+        if (strlen(trim((string) ($values['version_note'] ?? ''))) > 500) {
+            $errors['version_note'] = 'Nota di versione troppo lunga (max 500 caratteri).';
         }
 
         return $errors;
@@ -4048,6 +4681,548 @@ class ArchivesPlugin
     }
 
     // ── Phase 5 — Interoperability: Dublin Core, EAD3, OAI-PMH ────────────
+
+    // ── IIIF Presentation API 3.0 ────────────────────────────────────────────
+
+    /**
+     * GET /admin/archives/{id}/manifest.json and /archives/{id}/manifest.json
+     *
+     * Returns a IIIF Presentation API 3.0 manifest for one archival_unit.
+     * If the unit has a stored `iiif_manifest_url` pointing to an external
+     * IIIF server, the manifest includes a `seeAlso` link to it. Otherwise
+     * a Pinakes-native manifest is generated from available metadata and any
+     * locally stored cover image (`cover_image_path`).
+     *
+     * Consumed by Mirador, Universal Viewer, Cantaloupe, and aggregators that
+     * understand IIIF Presentation 3.0 (e.g. Europeana, British Library).
+     */
+    public function iiifManifestAction(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        int $id
+    ): ResponseInterface {
+        $stmt = $this->db->prepare(
+            'SELECT * FROM archival_units WHERE id = ? AND deleted_at IS NULL'
+        );
+        if ($stmt === false) {
+            $response->getBody()->write(json_encode(['error' => 'db_error'], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(500);
+        }
+        $stmt->bind_param('i', $id);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $row = $res instanceof \mysqli_result ? $res->fetch_assoc() : null;
+        $stmt->close();
+
+        if ($row === null) {
+            $response->getBody()->write(json_encode(['error' => 'not_found'], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
+        }
+
+        $baseUrl    = absoluteUrl('');
+        $base       = rtrim($baseUrl, '/');
+        $manifestId = $base . '/archives/' . $id . '/manifest.json';
+        $lang       = !empty($row['language_codes']) ? (preg_split('/[,;\s]+/', (string) $row['language_codes']) ?: ['it'])[0] : 'it';
+        $title      = (string) ($row['constructed_title'] ?? $row['formal_title'] ?? 'Untitled');
+        $institution = (string) ($row['institution_code'] ?? 'PINAKES');
+
+        $metadata = [];
+        $addMeta  = static function (string $label, mixed $value) use (&$metadata): void {
+            if ($value === null || $value === '') {
+                return;
+            }
+            $metadata[] = [
+                'label' => ['en' => [$label]],
+                'value' => ['none' => [(string) $value]],
+            ];
+        };
+        $addMeta('Reference Code', $row['reference_code']);
+        if (!empty($row['ark_identifier'])) {
+            $addMeta('Identifier (ARK)', $row['ark_identifier']);
+        }
+        $addMeta('Level',          $row['level']);
+        $dateStr = trim(($row['date_start'] ?? '') . ($row['date_end'] ? '–' . $row['date_end'] : ''), '–');
+        $addMeta('Date',           $dateStr);
+        $addMeta('Extent',         $row['extent']);
+        $addMeta('Language',       $row['language_codes']);
+        $addMeta('Institution',    $institution);
+        if (!empty($row['version_note'])) {
+            $addMeta('Version Note', $row['version_note']);
+        }
+
+        // Authority records — creator/subject names + external authority URIs
+        $authorities = $this->iiifFetchAuthoritiesWithRefs($id);
+        foreach ($authorities as $auth) {
+            $roleLabel = match ((string) $auth['role']) {
+                'creator'   => 'Creator',
+                'recipient' => 'Recipient',
+                'custodian' => 'Custodian',
+                'subject'   => 'Subject',
+                default     => 'Associated Name',
+            };
+            $addMeta($roleLabel, $auth['authorised_form']);
+
+            if (!empty($auth['external_refs'])) {
+                $refs = array_filter(array_map('trim', explode("\n", (string) $auth['external_refs'])));
+                foreach ($refs as $ref) {
+                    if (str_contains($ref, 'viaf.org')) {
+                        $addMeta('VIAF', $ref);
+                    } elseif (str_contains($ref, 'wikidata.org')) {
+                        $addMeta('Wikidata', $ref);
+                    }
+                }
+            }
+        }
+
+        $manifest = [
+            '@context' => 'http://iiif.io/api/presentation/3/context.json',
+            'id'       => $manifestId,
+            'type'     => 'Manifest',
+            'label'    => [$lang => [$title]],
+            'metadata' => $metadata,
+        ];
+
+        if (!empty($row['scope_content'])) {
+            $manifest['summary'] = [$lang => [(string) $row['scope_content']]];
+        }
+
+        // requiredStatement: human-readable attribution displayed by every viewer
+        $manifest['requiredStatement'] = [
+            'label' => ['en' => ['Attribution']],
+            'value' => ['none' => [$institution]],
+        ];
+
+        // provider: machine-readable Agent (institution homepage)
+        $manifest['provider'] = [[
+            'id'       => $base,
+            'type'     => 'Agent',
+            'label'    => ['none' => [$institution]],
+            'homepage' => [[
+                'id'     => $base,
+                'type'   => 'Text',
+                'label'  => ['none' => [$institution]],
+                'format' => 'text/html',
+            ]],
+        ]];
+
+        // rights: IIIF rights URI (e.g. https://rightsstatements.org/vocab/InC/1.0/)
+        if (!empty($row['rights_statement_url'])) {
+            $manifest['rights'] = (string) $row['rights_statement_url'];
+        }
+
+        // behavior: viewer UX hint derived from specific_material
+        $behavior = match ((string) ($row['specific_material'] ?? 'text')) {
+            'text', 'microform', 'electronic' => 'paged',
+            'photograph', 'poster', 'postcard',
+            'drawing', 'picture', 'object',
+            'map'                              => 'individuals',
+            'mixed'                            => 'unordered',
+            default                            => null,
+        };
+        if ($behavior !== null) {
+            $manifest['behavior'] = [$behavior];
+        }
+
+        // partOf: link to parent Collection (if unit has a parent)
+        if (!empty($row['parent_id'])) {
+            $manifest['partOf'] = [[
+                'id'   => $base . '/archives/' . (int) $row['parent_id'] . '/collection.json',
+                'type' => 'Collection',
+            ]];
+        } else {
+            $manifest['partOf'] = [[
+                'id'   => $base . '/archives/collection.json',
+                'type' => 'Collection',
+            ]];
+        }
+
+        // seeAlso: other serialisations (DC, EAD3, METS, OAI-PMH, external IIIF)
+        $manifest['seeAlso'] = [
+            ['id'     => $base . '/archives/' . $id . '/dc.xml',
+             'type'   => 'Dataset', 'format' => 'application/xml',
+             'label'  => ['en' => ['Dublin Core (OAI-DC)']]],
+            ['id'     => $base . '/archives/' . $id . '/ead.xml',
+             'type'   => 'Dataset', 'format' => 'application/xml',
+             'profile' => 'http://ead3.archivists.org/schema/',
+             'label'  => ['en' => ['EAD3 finding aid']]],
+            ['id'     => $base . '/archives/' . $id . '/mets.xml',
+             'type'   => 'Dataset', 'format' => 'application/xml',
+             'profile' => 'http://www.loc.gov/METS/',
+             'label'  => ['en' => ['METS package']]],
+            ['id'     => $base . '/archives/oai?verb=GetRecord&metadataPrefix=oai_dc&identifier=oai:pinakes:archival_unit:' . $id,
+             'type'   => 'Dataset', 'format' => 'text/xml',
+             'label'  => ['en' => ['OAI-PMH record']]],
+        ];
+        if (!empty($row['ark_identifier'])) {
+            $manifest['seeAlso'][] = [
+                'id'    => 'https://n2t.net/' . $row['ark_identifier'],
+                'type'  => 'Text',
+                'label' => ['en' => ['ARK persistent identifier']],
+            ];
+        }
+        if (!empty($row['iiif_manifest_url'])) {
+            $manifest['seeAlso'][] = [
+                'id'     => (string) $row['iiif_manifest_url'],
+                'type'   => 'Manifest',
+                'format' => 'application/ld+json;profile="http://iiif.io/api/presentation/3/context.json"',
+                'label'  => ['en' => ['Full IIIF manifest (external server)']],
+            ];
+        }
+
+        // Canvas items: one canvas per locally stored image, with real dimensions.
+        // Skip canvas entirely if the file no longer exists — avoids 404 references.
+        $items = [];
+        if (!empty($row['cover_image_path'])) {
+            $coverPath = (string) $row['cover_image_path'];
+            $fsPath    = __DIR__ . '/../../../public' . $coverPath;
+            if (is_file($fsPath)) {
+                $imageUrl  = $base . '/' . ltrim($coverPath, '/');
+                $imgSize   = @getimagesize($fsPath);
+                $imgWidth  = ($imgSize !== false && $imgSize[0] > 0) ? $imgSize[0] : 1500;
+                $imgHeight = ($imgSize !== false && $imgSize[1] > 0) ? $imgSize[1] : 2000;
+                $mime      = ($imgSize !== false) ? $imgSize['mime'] : 'image/jpeg';
+
+                $canvasId = $manifestId . '/canvas/1';
+                $items[]  = [
+                    'id'     => $canvasId,
+                    'type'   => 'Canvas',
+                    'label'  => ['none' => ['1']],
+                    'width'  => $imgWidth,
+                    'height' => $imgHeight,
+                    'items'  => [[
+                        'id'    => $canvasId . '/page',
+                        'type'  => 'AnnotationPage',
+                        'items' => [[
+                            'id'         => $canvasId . '/annotation/1',
+                            'type'       => 'Annotation',
+                            'motivation' => 'painting',
+                            'body'       => [
+                                'id'     => $imageUrl,
+                                'type'   => 'Image',
+                                'format' => $mime,
+                                'width'  => $imgWidth,
+                                'height' => $imgHeight,
+                            ],
+                            'target' => $canvasId,
+                        ]],
+                    ]],
+                ];
+            }
+        }
+        // Additional image files from archival_unit_files → extra Canvases.
+        // Non-image files (PDF, audio, video) → rendering[] array.
+        $unitFiles   = $this->fetchUnitFiles($id);
+        $canvasIndex = count($items) + 1;
+        $rendering   = [];
+        foreach ($unitFiles as $uf) {
+            $fileMime = (string) $uf['file_mime'];
+            $fsPath   = __DIR__ . '/../../../public' . (string) $uf['file_path'];
+            if (!is_file($fsPath)) {
+                continue;
+            }
+            $fileUrl = $base . '/' . ltrim((string) $uf['file_path'], '/');
+            $label   = (string) ($uf['original_filename'] ?: basename((string) $uf['file_path']));
+            if (str_starts_with($fileMime, 'image/')) {
+                $imgSize      = @getimagesize($fsPath);
+                $imgW         = ($imgSize !== false && $imgSize[0] > 0) ? $imgSize[0] : 1500;
+                $imgH         = ($imgSize !== false && $imgSize[1] > 0) ? $imgSize[1] : 2000;
+                $detectedMime = ($imgSize !== false) ? $imgSize['mime'] : $fileMime;
+                $canvasId     = $manifestId . '/canvas/' . $canvasIndex;
+                $items[]      = [
+                    'id'     => $canvasId,
+                    'type'   => 'Canvas',
+                    'label'  => ['none' => [$label]],
+                    'width'  => $imgW,
+                    'height' => $imgH,
+                    'items'  => [[
+                        'id'    => $canvasId . '/page',
+                        'type'  => 'AnnotationPage',
+                        'items' => [[
+                            'id'         => $canvasId . '/annotation/1',
+                            'type'       => 'Annotation',
+                            'motivation' => 'painting',
+                            'body'       => [
+                                'id'     => $fileUrl,
+                                'type'   => 'Image',
+                                'format' => $detectedMime,
+                                'width'  => $imgW,
+                                'height' => $imgH,
+                            ],
+                            'target' => $canvasId,
+                        ]],
+                    ]],
+                ];
+                $canvasIndex++;
+            } else {
+                $iiifType = match (true) {
+                    str_starts_with($fileMime, 'audio/') => 'Sound',
+                    str_starts_with($fileMime, 'video/') => 'Video',
+                    default                              => 'Text',
+                };
+                $rendering[] = [
+                    'id'     => $fileUrl,
+                    'type'   => $iiifType,
+                    'label'  => ['none' => [$label]],
+                    'format' => $fileMime,
+                ];
+            }
+        }
+        if (!empty($rendering)) {
+            $manifest['rendering'] = $rendering;
+        }
+
+        // IIIF 3.0 §3.3: items must have cardinality ≥ 1.
+        // When no local image is available, serve a minimal placeholder Canvas
+        // so clients receive a valid (if unpainted) manifest.
+        if (empty($items)) {
+            $canvasId = $manifestId . '/canvas/placeholder';
+            $items[]  = [
+                'id'     => $canvasId,
+                'type'   => 'Canvas',
+                'label'  => ['none' => ['[No digital image available]']],
+                'width'  => 1,
+                'height' => 1,
+            ];
+        }
+        $manifest['items'] = $items;
+
+        // structures: nested IIIF Range hierarchy (§1.1)
+        // Each ancestor becomes an outer Range wrapping the next;
+        // the innermost Range holds the canvas items directly.
+        $ancestors = $this->iiifBuildAncestorChain((int) $row['id'], (int) ($row['parent_id'] ?? 0));
+        $structures = $this->iiifBuildNestedStructures($ancestors, $items, $manifestId, $lang);
+        if (!empty($structures)) {
+            $manifest['structures'] = $structures;
+        }
+
+        $json = json_encode($manifest, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $response->getBody()->write($json);
+        return $response
+            ->withHeader('Content-Type', 'application/ld+json;profile="http://iiif.io/api/presentation/3/context.json"')
+            ->withHeader('Access-Control-Allow-Origin', '*');
+    }
+
+    /**
+     * Walk up the parent_id chain to build an ancestor list (root first).
+     * Returns [{id, title}, ...] ending with the current unit.
+     *
+     * @return list<array{id:int,title:string}>
+     */
+    private function iiifBuildAncestorChain(int $leafId, int $parentId): array
+    {
+        $chain = [];
+        $visited = [];
+        $currentParent = $parentId;
+        while ($currentParent > 0 && !isset($visited[$currentParent])) {
+            $visited[$currentParent] = true;
+            $s = $this->db->prepare(
+                'SELECT id, parent_id, constructed_title, formal_title FROM archival_units WHERE id = ? AND deleted_at IS NULL'
+            );
+            if ($s === false) {
+                break;
+            }
+            $s->bind_param('i', $currentParent);
+            $s->execute();
+            $res = $s->get_result();
+            $r   = $res instanceof \mysqli_result ? $res->fetch_assoc() : null;
+            $s->close();
+            if ($r === null) {
+                break;
+            }
+            array_unshift($chain, [
+                'id'    => (int) $r['id'],
+                'title' => (string) ($r['constructed_title'] ?? $r['formal_title'] ?? 'Untitled'),
+            ]);
+            $currentParent = (int) ($r['parent_id'] ?? 0);
+        }
+        // Append the leaf itself
+        $leafTitle = '';
+        // FIX F033: add soft-delete guard (cf. CLAUDE.md soft-delete rule)
+        $s2 = $this->db->prepare('SELECT constructed_title, formal_title FROM archival_units WHERE id = ? AND deleted_at IS NULL');
+        if ($s2 !== false) {
+            $s2->bind_param('i', $leafId);
+            $s2->execute();
+            $res2      = $s2->get_result();
+            $r2        = $res2 instanceof \mysqli_result ? $res2->fetch_assoc() : null;
+            $s2->close();
+            $leafTitle = (string) ($r2['constructed_title'] ?? $r2['formal_title'] ?? 'Untitled');
+        }
+        $chain[] = ['id' => $leafId, 'title' => $leafTitle];
+        return $chain;
+    }
+
+    /**
+     * Build a nested IIIF Range hierarchy from a root-to-leaf ancestor chain (§1.1).
+     *
+     * Each ancestor becomes an outer Range wrapping the next; the innermost
+     * Range holds references to the manifest's Canvas items directly.
+     * Returns a list suitable for manifest['structures'].
+     *
+     * @param list<array{id:int,title:string}> $ancestors root-to-leaf
+     * @param list<array<string,mixed>>        $canvases  canvas items already built
+     * @param string                           $manifestId manifest base URL
+     * @param string                           $lang       IIIF language code for labels
+     * @return list<array<string,mixed>>
+     */
+    private function iiifBuildNestedStructures(
+        array $ancestors,
+        array $canvases,
+        string $manifestId,
+        string $lang
+    ): array {
+        $innerItems = array_map(
+            static fn(array $c) => ['id' => (string) $c['id'], 'type' => 'Canvas'],
+            $canvases
+        );
+
+        if (empty($innerItems)) {
+            return [];
+        }
+
+        if (empty($ancestors)) {
+            return [[
+                'id'    => $manifestId . '#range/r0',
+                'type'  => 'Range',
+                'label' => ['none' => ['Content']],
+                'items' => $innerItems,
+            ]];
+        }
+
+        // Build from inside out: deepest ancestor wraps canvases,
+        // each outer ancestor wraps the next inner Range as its sole item.
+        $depth   = count($ancestors);
+        $current = [
+            'id'    => $manifestId . '#range/r' . ($depth - 1),
+            'type'  => 'Range',
+            'label' => [$lang => [$ancestors[$depth - 1]['title']]],
+            'items' => $innerItems,
+        ];
+        for ($i = $depth - 2; $i >= 0; $i--) {
+            $current = [
+                'id'    => $manifestId . '#range/r' . $i,
+                'type'  => 'Range',
+                'label' => [$lang => [$ancestors[$i]['title']]],
+                'items' => [$current],
+            ];
+        }
+
+        return [$current];
+    }
+
+    /**
+     * Fetch authority records linked to an archival unit, including external_refs
+     * for VIAF/Wikidata URIs. Used only for IIIF manifest metadata enrichment.
+     *
+     * @return list<array<string,mixed>>
+     */
+    private function iiifFetchAuthoritiesWithRefs(int $archivalUnitId): array
+    {
+        $rows = [];
+        $stmt = $this->db->prepare(
+            'SELECT ar.type, ar.authorised_form, ar.external_refs, aua.role
+               FROM archival_unit_authority aua
+               JOIN authority_records ar ON ar.id = aua.authority_id AND ar.deleted_at IS NULL
+              WHERE aua.archival_unit_id = ?
+              ORDER BY ar.authorised_form'
+        );
+        if ($stmt === false) {
+            return $rows;
+        }
+        $stmt->bind_param('i', $archivalUnitId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($result instanceof \mysqli_result) {
+            while ($row = $result->fetch_assoc()) {
+                $rows[] = $row;
+            }
+            $result->free();
+        }
+        $stmt->close();
+        return $rows;
+    }
+
+    /**
+     * GET /archives/collection.json         — root IIIF Collection (all top-level fondi)
+     * GET /archives/{id}/collection.json    — sub-Collection (direct children of a unit)
+     *
+     * A IIIF Collection is a list of Manifest references. External viewers
+     * (Mirador, Universal Viewer) can load a Collection and navigate the tree.
+     */
+    public function iiifCollectionAction(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        ?int $id = null
+    ): ResponseInterface {
+        $base = rtrim(absoluteUrl(''), '/');
+
+        if ($id === null) {
+            // Root collection: all non-deleted, top-level units (parent_id IS NULL)
+            $collectionId = $base . '/archives/collection.json';
+            $label        = ['en' => ['Archives collection'], 'it' => ['Collezione archivistica']];
+            $result = $this->db->query(
+                "SELECT a.id, a.constructed_title, a.formal_title, a.level,
+                        EXISTS(SELECT 1 FROM archival_units c WHERE c.parent_id = a.id AND c.deleted_at IS NULL) AS has_children
+                   FROM archival_units a
+                  WHERE a.parent_id IS NULL AND a.level = 'fonds' AND a.deleted_at IS NULL
+                  ORDER BY a.reference_code"
+            );
+        } else {
+            // Sub-collection: direct children of the given unit
+            $collectionId = $base . '/archives/' . $id . '/collection.json';
+            $parent = $this->findById($id);
+            if ($parent === null) {
+                $response->getBody()->write(json_encode(['error' => 'not_found'], JSON_THROW_ON_ERROR));
+                return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
+            }
+            $label = ['none' => [(string) ($parent['constructed_title'] ?? $parent['formal_title'] ?? 'Untitled')]];
+            $stmt  = $this->db->prepare(
+                'SELECT a.id, a.constructed_title, a.formal_title, a.level,
+                        EXISTS(SELECT 1 FROM archival_units c WHERE c.parent_id = a.id AND c.deleted_at IS NULL) AS has_children
+                   FROM archival_units a
+                  WHERE a.parent_id = ? AND a.deleted_at IS NULL
+                  ORDER BY a.reference_code'
+            );
+            if ($stmt === false) {
+                $response->getBody()->write(json_encode(['error' => 'db_error'], JSON_THROW_ON_ERROR));
+                return $response->withHeader('Content-Type', 'application/json')->withStatus(500);
+            }
+            $stmt->bind_param('i', $id);
+            $stmt->execute();
+            $result = $stmt->get_result();
+        }
+
+        $items = [];
+        if ($result instanceof \mysqli_result) {
+            while ($child = $result->fetch_assoc()) {
+                $childId     = (int) $child['id'];
+                $childTitle  = (string) ($child['constructed_title'] ?? $child['formal_title'] ?? 'Untitled');
+                // Units with children become sub-Collections; leaf units are Manifests
+                $hasChildren = (bool) ($child['has_children'] ?? false);
+                $items[] = [
+                    'id'    => $hasChildren
+                        ? $base . '/archives/' . $childId . '/collection.json'
+                        : $base . '/archives/' . $childId . '/manifest.json',
+                    'type'  => $hasChildren ? 'Collection' : 'Manifest',
+                    'label' => ['none' => [$childTitle]],
+                ];
+            }
+            $result->free();
+        }
+
+        $collection = [
+            '@context' => 'http://iiif.io/api/presentation/3/context.json',
+            'id'       => $collectionId,
+            'type'     => 'Collection',
+            'label'    => $label,
+            'items'    => $items,
+        ];
+
+        $json = json_encode($collection, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $response->getBody()->write($json);
+        return $response
+            ->withHeader('Content-Type', 'application/ld+json;profile="http://iiif.io/api/presentation/3/context.json"')
+            ->withHeader('Access-Control-Allow-Origin', '*');
+    }
 
     // ── Dublin Core XML ──────────────────────────────────────────────────────
 
@@ -4128,6 +5303,9 @@ class ArchivesPlugin
         if (!empty($row['reference_code'])) {
             $xw->writeElementNs('dc', 'identifier', null, (string) $row['reference_code']);
         }
+        if (!empty($row['ark_identifier'])) {
+            $xw->writeElementNs('dc', 'identifier', null, (string) $row['ark_identifier']);
+        }
         $publisher = trim((string) ($row['repository_name'] ?? ''));
         if ($publisher === '') {
             $publisher = trim((string) \App\Support\ConfigStore::get('app.name', 'Pinakes'));
@@ -4157,16 +5335,267 @@ class ArchivesPlugin
             $xw->writeElementNs('dc', 'format', null, (string) $row['extent']);
         }
         if (!empty($row['language_codes'])) {
-            $xw->writeElementNs('dc', 'language', null, (string) $row['language_codes']);
+            foreach (preg_split('/[,;\s]+/', (string) $row['language_codes']) ?: [] as $langCode) {
+                $langCode = trim($langCode);
+                if ($langCode !== '') {
+                    $xw->writeElementNs('dc', 'language', null, $langCode);
+                }
+            }
         }
         if (!empty($row['access_conditions'])) {
             $xw->writeElementNs('dc', 'rights', null, (string) $row['access_conditions']);
+        }
+        if (!empty($row['rights_statement_url'])) {
+            $xw->writeElementNs('dc', 'rights', null, (string) $row['rights_statement_url']);
         }
 
         $xw->endElement(); // oai_dc:dc
     }
 
-    // ── EAD3 export ──────────────────────────────────────────────────────────
+    // ── EAD3 / METS per-unit export ───────────────────────────────────────────
+
+    /**
+     * GET /archives/{id}/ead.xml and /admin/archives/{id}/ead.xml
+     * Single-unit EAD3 finding aid (not wrapped in <eadlist>).
+     */
+    public function exportEad3Action(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        int $id
+    ): ResponseInterface {
+        $row = $this->findById($id);
+        if ($row === null) {
+            $response->getBody()->write('Not found');
+            return $response->withStatus(404);
+        }
+        $authorities = $this->fetchAuthoritiesForArchivalUnit($id);
+        $xw = new \XMLWriter();
+        $xw->openMemory();
+        $xw->setIndent(true);
+        $xw->startDocument('1.0', 'UTF-8');
+        $this->writeEad3Document($xw, $row, $authorities);
+        $xw->endDocument();
+        $slug = preg_replace('/[^a-z0-9_-]/i', '_', (string) ($row['reference_code'] ?? 'ead'));
+        $response->getBody()->write($xw->outputMemory());
+        return $response
+            ->withHeader('Content-Type', 'application/xml; charset=utf-8')
+            ->withHeader('Content-Disposition', 'inline; filename="' . $slug . '.ead3.xml"');
+    }
+
+    /**
+     * GET /archives/{id}/mets.xml and /admin/archives/{id}/mets.xml
+     * METS package: DC inline + EAD3 by reference + IIIF manifest link.
+     * Suitable for submission to Europeana and national aggregators.
+     */
+    public function exportMetsAction(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        int $id
+    ): ResponseInterface {
+        $row = $this->findById($id);
+        if ($row === null) {
+            $response->getBody()->write('Not found');
+            return $response->withStatus(404);
+        }
+        $authorities = $this->fetchAuthoritiesForArchivalUnit($id);
+        $xml = $this->buildMetsXml($row, $authorities);
+        $slug = preg_replace('/[^a-z0-9_-]/i', '_', (string) ($row['reference_code'] ?? 'mets'));
+        $response->getBody()->write($xml);
+        return $response
+            ->withHeader('Content-Type', 'application/xml; charset=utf-8')
+            ->withHeader('Content-Disposition', 'inline; filename="' . $slug . '.mets.xml"');
+    }
+
+    /**
+     * Build a METS 1.12 document for one archival_unit.
+     * Structure:
+     *   metsHdr   — software agent (Pinakes)
+     *   dmdSec/1  — Dublin Core (inline)
+     *   dmdSec/2  — EAD3 finding aid (by URL reference)
+     *   fileSec   — IIIF manifest + optional cover image
+     *   structMap — logical div linking DMD sections to files
+     *
+     * @param array<string, mixed>      $row
+     * @param list<array<string,mixed>> $authorities
+     */
+    private function buildMetsXml(array $row, array $authorities): string
+    {
+        $base      = rtrim((string) absoluteUrl(''), '/');
+        $unitId    = (int) ($row['id'] ?? 0);
+        $unitFiles = $unitId > 0 ? $this->fetchUnitFiles($unitId) : [];
+        $title  = (string) ($row['constructed_title'] ?? $row['formal_title'] ?? 'Untitled');
+        $objId = !empty($row['ark_identifier'])
+            ? (string) $row['ark_identifier']
+            : 'oai:pinakes:archival_unit:' . $unitId;
+
+        $now       = gmdate('Y-m-d\TH:i:s\Z');
+        $createdAt = $now;
+        $updatedAt = $now;
+        try {
+            if (!empty($row['created_at'])) {
+                $createdAt = (new \DateTimeImmutable((string) $row['created_at']))
+                    ->setTimezone(new \DateTimeZone('UTC'))
+                    ->format('Y-m-d\TH:i:s\Z');
+            }
+            if (!empty($row['updated_at'])) {
+                $updatedAt = (new \DateTimeImmutable((string) $row['updated_at']))
+                    ->setTimezone(new \DateTimeZone('UTC'))
+                    ->format('Y-m-d\TH:i:s\Z');
+            }
+        } catch (\Throwable) {}
+
+        $xw = new \XMLWriter();
+        $xw->openMemory();
+        $xw->setIndent(true);
+        $xw->startDocument('1.0', 'UTF-8');
+
+        $xw->startElementNs('mets', 'mets', 'http://www.loc.gov/METS/');
+        $xw->writeAttributeNs('xmlns', 'xlink', null, 'http://www.w3.org/1999/xlink');
+        $xw->writeAttributeNs('xmlns', 'xsi',   null, 'http://www.w3.org/2001/XMLSchema-instance');
+        $xw->writeAttributeNs('xsi', 'schemaLocation', null,
+            'http://www.loc.gov/METS/ http://www.loc.gov/standards/mets/mets.xsd');
+        $xw->writeAttribute('OBJID', $objId);
+        $xw->writeAttribute('LABEL', $title);
+        $xw->writeAttribute('TYPE',  'ArchivalUnit');
+
+        // metsHdr
+        $xw->startElement('mets:metsHdr');
+        $xw->writeAttribute('CREATEDATE',   $createdAt);
+        $xw->writeAttribute('LASTMODDATE',  $updatedAt);
+        $xw->startElement('mets:agent');
+        $xw->writeAttribute('ROLE', 'CREATOR');
+        $xw->writeAttribute('TYPE', 'OTHER');
+        $xw->writeAttribute('OTHERTYPE', 'SOFTWARE');
+        $xw->writeElement('mets:name', 'Pinakes Archives Module');
+        $xw->endElement(); // agent
+        $xw->endElement(); // metsHdr
+
+        // dmdSec 1 — Dublin Core inline
+        $xw->startElement('mets:dmdSec');
+        $xw->writeAttribute('ID', 'DMD01');
+        $xw->startElement('mets:mdWrap');
+        $xw->writeAttribute('MDTYPE',   'DC');
+        $xw->writeAttribute('MIMETYPE', 'text/xml');
+        $xw->startElement('mets:xmlData');
+        $this->writeDublinCoreRecord($xw, $row, $authorities);
+        $xw->endElement(); // xmlData
+        $xw->endElement(); // mdWrap
+        $xw->endElement(); // dmdSec
+
+        // dmdSec 2 — EAD3 by reference
+        $xw->startElement('mets:dmdSec');
+        $xw->writeAttribute('ID', 'DMD02');
+        $xw->startElement('mets:mdRef');
+        $xw->writeAttribute('MDTYPE',   'EAD');
+        $xw->writeAttribute('MIMETYPE', 'application/xml');
+        $xw->writeAttribute('LOCTYPE',  'URL');
+        $xw->writeAttributeNs('xlink', 'type', null, 'simple');
+        $xw->writeAttributeNs('xlink', 'href', null, $base . '/archives/' . $unitId . '/ead.xml');
+        $xw->endElement(); // mdRef
+        $xw->endElement(); // dmdSec
+
+        // fileSec
+        $xw->startElement('mets:fileSec');
+
+        $xw->startElement('mets:fileGrp');
+        $xw->writeAttribute('USE', 'reference');
+        $xw->startElement('mets:file');
+        $xw->writeAttribute('ID',       'IIIF_MANIFEST');
+        $xw->writeAttribute('MIMETYPE', 'application/ld+json');
+        $xw->writeAttribute('USE',      'iiif-manifest');
+        $xw->startElement('mets:FLocat');
+        $xw->writeAttribute('LOCTYPE', 'URL');
+        $xw->writeAttributeNs('xlink', 'type', null, 'simple');
+        $xw->writeAttributeNs('xlink', 'href', null, $base . '/archives/' . $unitId . '/manifest.json');
+        $xw->endElement(); // FLocat
+        $xw->endElement(); // file
+        $xw->endElement(); // fileGrp
+
+        $hasCoverFile = !empty($row['cover_image_path'])
+            && is_file(__DIR__ . '/../../../public' . (string) $row['cover_image_path']);
+        if ($hasCoverFile) {
+            $coverPath = (string) $row['cover_image_path'];
+            $fsPath    = __DIR__ . '/../../../public' . $coverPath;
+            $imgSize   = @getimagesize($fsPath);
+            $mime      = ($imgSize !== false) ? $imgSize['mime'] : 'image/jpeg';
+            $xw->startElement('mets:fileGrp');
+            $xw->writeAttribute('USE', 'thumbnail');
+            $xw->startElement('mets:file');
+            $xw->writeAttribute('ID',       'COVER_IMAGE');
+            $xw->writeAttribute('MIMETYPE', $mime);
+            $xw->startElement('mets:FLocat');
+            $xw->writeAttribute('LOCTYPE', 'URL');
+            $xw->writeAttributeNs('xlink', 'type', null, 'simple');
+            $xw->writeAttributeNs('xlink', 'href', null, $base . '/' . ltrim($coverPath, '/'));
+            $xw->endElement(); // FLocat
+            $xw->endElement(); // file
+            $xw->endElement(); // fileGrp
+        }
+
+        // fileGrp for multi-document files stored in archival_unit_files.
+        // Pre-collect valid (on-disk) files to avoid emitting an empty fileGrp.
+        $validDocFiles = array_values(array_filter(
+            $unitFiles,
+            fn(array $uf): bool => is_file(__DIR__ . '/../../../public' . (string) $uf['file_path'])
+        ));
+        // $docFileEntries: array<int, array{id: string, label: string}> for structMap
+        $docFileEntries = [];
+        if (!empty($validDocFiles)) {
+            $xw->startElement('mets:fileGrp');
+            $xw->writeAttribute('USE', 'documents');
+            foreach ($validDocFiles as $idx => $uf) {
+                $docMime  = (string) ($uf['file_mime'] ?: 'application/octet-stream');
+                $fileId   = 'DOC_' . $idx;
+                $docLabel = (string) ($uf['original_filename'] ?: basename((string) $uf['file_path']));
+                $docFileEntries[] = ['id' => $fileId, 'label' => $docLabel];
+                $xw->startElement('mets:file');
+                $xw->writeAttribute('ID',       $fileId);
+                $xw->writeAttribute('MIMETYPE', $docMime);
+                $xw->startElement('mets:FLocat');
+                $xw->writeAttribute('LOCTYPE', 'URL');
+                $xw->writeAttributeNs('xlink', 'type', null, 'simple');
+                $xw->writeAttributeNs('xlink', 'href', null, $base . '/' . ltrim((string) $uf['file_path'], '/'));
+                $xw->endElement(); // FLocat
+                $xw->endElement(); // file
+            }
+            $xw->endElement(); // fileGrp
+        }
+
+        $xw->endElement(); // fileSec
+
+        // structMap
+        $xw->startElement('mets:structMap');
+        $xw->writeAttribute('TYPE', 'logical');
+        $xw->startElement('mets:div');
+        $xw->writeAttribute('TYPE',  'ArchivalUnit');
+        $xw->writeAttribute('LABEL', $title);
+        $xw->writeAttribute('DMDID', 'DMD01 DMD02');
+        $xw->startElement('mets:fptr');
+        $xw->writeAttribute('FILEID', 'IIIF_MANIFEST');
+        $xw->endElement(); // fptr
+        if ($hasCoverFile) {
+            $xw->startElement('mets:fptr');
+            $xw->writeAttribute('FILEID', 'COVER_IMAGE');
+            $xw->endElement(); // fptr
+        }
+        foreach ($docFileEntries as $entry) {
+            $xw->startElement('mets:div');
+            $xw->writeAttribute('TYPE',  'Document');
+            $xw->writeAttribute('LABEL', $entry['label']);
+            $xw->startElement('mets:fptr');
+            $xw->writeAttribute('FILEID', $entry['id']);
+            $xw->endElement(); // fptr
+            $xw->endElement(); // div
+        }
+        $xw->endElement(); // div (ArchivalUnit)
+        $xw->endElement(); // structMap
+
+        $xw->endElement(); // mets:mets
+        $xw->endDocument();
+        return $xw->outputMemory();
+    }
+
+    // ── EAD3 bulk export ─────────────────────────────────────────────────────
 
     /**
      * GET /admin/archives/export.ead3?ids=1,2,3 — EAD3 XML bulk export.
@@ -4230,11 +5659,18 @@ class ArchivesPlugin
         // schema) used to group multiple <ead> documents in a single XML file.
         // EAD3 has no standard bulk-export wrapper; tools that consume this file
         // can strip the outer element and process each <ead> child independently.
+        // Pre-fetch all unit files and authorities in one query each to avoid N+1.
+        $allUnitIds        = array_map(fn(array $r): int => (int) $r['id'], $rows);
+        $allUnitFiles      = $this->fetchUnitFilesForUnits($allUnitIds);
+        $allUnitFiles      = array_replace(array_fill_keys($allUnitIds, []), $allUnitFiles);
+        $ead3AuthoritiesMap = $this->fetchAuthoritiesForUnits($allUnitIds);
+
         $xw->startElement('eadlist');
         $xw->writeAttribute('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance');
         foreach ($rows as $row) {
-            $auth = $this->fetchAuthoritiesForArchivalUnit((int) $row['id']);
-            $this->writeEad3Document($xw, $row, $auth);
+            $auth         = $ead3AuthoritiesMap[(int) $row['id']] ?? [];
+            $rowUnitFiles = $allUnitFiles[(int) $row['id']] ?? null;
+            $this->writeEad3Document($xw, $row, $auth, $rowUnitFiles);
         }
         $xw->endElement(); // eadlist
         $xw->endDocument();
@@ -4268,7 +5704,12 @@ class ArchivesPlugin
      * @param array<string, mixed> $row
      * @param list<array<string, mixed>> $authorities
      */
-    private function writeEad3Document(\XMLWriter $xw, array $row, array $authorities): void
+    /**
+     * @param list<array{id:int,file_path:string,file_mime:string,original_filename:string,sort_order:int}> $unitFiles
+     *     Pre-fetched files for this unit; if empty the method fetches them itself.
+     *     Pass a non-empty array to avoid N+1 queries in collection exports.
+     */
+    private function writeEad3Document(\XMLWriter $xw, array $row, array $authorities, ?array $unitFiles = null): void
     {
         $ns = 'http://ead3.archivists.org/schema/';
         $xw->startElementNs(null, 'ead', $ns);
@@ -4282,7 +5723,11 @@ class ArchivesPlugin
         $xw->writeAttribute('dateencoding',    'iso8601');
         $xw->writeAttribute('langencoding',    'iso639-2b');
 
-        $xw->writeElement('recordid', (string) ($row['reference_code'] ?? 'pinakes_' . $row['id']));
+        // Prefer the ARK identifier as the canonical record ID; fall back to reference_code
+        $recordId = !empty($row['ark_identifier'])
+            ? (string) $row['ark_identifier']
+            : (string) ($row['reference_code'] ?? 'pinakes_' . $row['id']);
+        $xw->writeElement('recordid', $recordId);
 
         $xw->startElement('filedesc');
         $xw->startElement('titlestmt');
@@ -4406,6 +5851,47 @@ class ArchivesPlugin
                 }
             }
             $xw->endElement(); // langmaterial
+        }
+        // <daoset> must be a child of <did> per EAD3 schema
+        $unitId = (int) ($row['id'] ?? 0);
+        if ($unitId > 0) {
+            $xw->startElement('daoset');
+            $xw->writeAttribute('coverage', 'whole');
+            $xw->startElement('dao');
+            $xw->writeAttribute('daotype', 'derived');
+            $xw->writeAttribute('href', (string) absoluteUrl('/archives/' . $unitId . '/manifest.json'));
+            $xw->writeAttribute('linktitle', 'IIIF Manifest');
+            $xw->writeAttribute('actuate', 'onrequest');
+            $xw->writeAttribute('show', 'new');
+            $xw->endElement(); // dao
+            if (!empty($row['cover_image_path'])
+                && is_file(__DIR__ . '/../../../public' . (string) $row['cover_image_path'])
+            ) {
+                $xw->startElement('dao');
+                $xw->writeAttribute('daotype', 'borndigital');
+                $xw->writeAttribute('href', (string) absoluteUrl('/' . ltrim((string) $row['cover_image_path'], '/')));
+                $xw->writeAttribute('linktitle', 'Cover image');
+                $xw->writeAttribute('actuate', 'onrequest');
+                $xw->writeAttribute('show', 'embed');
+                $xw->endElement(); // dao
+            }
+            // One <dao> per multi-document file in archival_unit_files.
+            $filesToEmit = $unitFiles ?? $this->fetchUnitFiles($unitId);
+            foreach ($filesToEmit as $uf) {
+                $fsPathDoc = __DIR__ . '/../../../public' . (string) $uf['file_path'];
+                if (!is_file($fsPathDoc)) {
+                    continue;
+                }
+                $docUrl = (string) absoluteUrl('/' . ltrim((string) $uf['file_path'], '/'));
+                $xw->startElement('dao');
+                $xw->writeAttribute('daotype',   'borndigital');
+                $xw->writeAttribute('href',       $docUrl);
+                $xw->writeAttribute('linktitle',  (string) ($uf['original_filename'] ?: basename((string) $uf['file_path'])));
+                $xw->writeAttribute('actuate',    'onrequest');
+                $xw->writeAttribute('show',       'new');
+                $xw->endElement(); // dao
+            }
+            $xw->endElement(); // daoset
         }
         $xw->endElement(); // did
 
@@ -4591,6 +6077,20 @@ class ArchivesPlugin
         $xw->startElement('granularity');
         $xw->text('YYYY-MM-DDThh:mm:ssZ');
         $xw->endElement();
+        // oai-identifier description (Implementation Guidelines §2.1)
+        // Namespace must match identifiers emitted by oaiListRecords/oaiGetRecord.
+        $xw->startElement('description');
+        $xw->startElementNs(null, 'oai-identifier',
+            'http://www.openarchives.org/OAI/2.0/oai-identifier');
+        $xw->writeAttributeNs('xsi', 'schemaLocation', null,
+            'http://www.openarchives.org/OAI/2.0/oai-identifier ' .
+            'http://www.openarchives.org/OAI/2.0/oai-identifier.xsd');
+        $xw->writeElement('scheme', 'oai');
+        $xw->writeElement('repositoryIdentifier', 'pinakes');
+        $xw->writeElement('delimiter', ':');
+        $xw->writeElement('sampleIdentifier', 'oai:pinakes:archival_unit:1');
+        $xw->endElement(); // oai-identifier
+        $xw->endElement(); // description
         $xw->endElement(); // Identify
     }
 
@@ -4676,20 +6176,45 @@ class ArchivesPlugin
             return;
         }
 
+        $validateOaiDate = static function (string $date): bool {
+            $fmt = strlen($date) === 10 ? 'Y-m-d' : 'Y-m-d\TH:i:s\Z';
+            $d   = \DateTime::createFromFormat($fmt, $date);
+            if ($d === false) {
+                return false;
+            }
+            $errs = \DateTime::getLastErrors();
+            return $errs === false
+                || ($errs['error_count'] === 0 && $errs['warning_count'] === 0);
+        };
+        if ($from !== '' && !$validateOaiDate($from)) {
+            $this->oaiError($xw, 'badArgument', 'Invalid from date. Use YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.');
+            return;
+        }
+        if ($until !== '' && !$validateOaiDate($until)) {
+            $this->oaiError($xw, 'badArgument', 'Invalid until date. Use YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.');
+            return;
+        }
+        if ($from !== '' && $until !== '' && strlen($from) !== strlen($until)) {
+            $this->oaiError($xw, 'badArgument', 'from and until must use the same granularity (both YYYY-MM-DD or both YYYY-MM-DDThh:mm:ssZ).');
+            return;
+        }
+
         $pageSize = 100;
         $where    = ['deleted_at IS NULL'];
         $bindTypes = '';
         $bindVals  = [];
 
         if ($from !== '') {
-            $where[]     = 'updated_at >= ?';
-            $bindTypes  .= 's';
-            $bindVals[]  = str_replace('T', ' ', str_replace('Z', '', $from));
+            $fromSql    = strlen($from) === 10 ? $from . ' 00:00:00' : str_replace('T', ' ', str_replace('Z', '', $from));
+            $where[]    = 'updated_at >= ?';
+            $bindTypes .= 's';
+            $bindVals[] = $fromSql;
         }
         if ($until !== '') {
+            $untilSql   = strlen($until) === 10 ? $until . ' 23:59:59' : str_replace('T', ' ', str_replace('Z', '', $until));
             $where[]    = 'updated_at <= ?';
             $bindTypes .= 's';
-            $bindVals[] = str_replace('T', ' ', str_replace('Z', '', $until));
+            $bindVals[] = $untilSql;
         }
         $whereClause = implode(' AND ', $where);
         $limitSql    = 'LIMIT ' . $pageSize . ' OFFSET ' . $cursor;
@@ -4748,6 +6273,9 @@ class ArchivesPlugin
         $verbElement = $identifiersOnly ? 'ListIdentifiers' : 'ListRecords';
         $xw->startElement($verbElement);
 
+        $oaiUnitIds = array_map(fn(array $r): int => (int) $r['id'], $rows);
+        $oaiAuthoritiesMap = $identifiersOnly ? [] : $this->fetchAuthoritiesForUnits($oaiUnitIds);
+
         foreach ($rows as $row) {
             $rowId   = (int) $row['id'];
             $oaiId   = 'oai:pinakes:archival_unit:' . $rowId;
@@ -4761,14 +6289,13 @@ class ArchivesPlugin
             $xw->startElement('header');
             $xw->writeElement('identifier', $oaiId);
             $xw->writeElement('datestamp',  $dtStamp);
-            if (!empty($row['level'])) {
-                $xw->writeElement('setSpec', (string) $row['level']);
-            }
+            // setSpec omitted: this repository returns noSetHierarchy from ListSets,
+            // so advertising set membership in record headers would be contradictory.
             $xw->endElement(); // header
 
             if (!$identifiersOnly) {
                 $xw->startElement('metadata');
-                $authorities = $this->fetchAuthoritiesForArchivalUnit($rowId);
+                $authorities = $oaiAuthoritiesMap[$rowId] ?? [];
                 if ($metadataPrefix === 'oai_dc') {
                     $this->writeDublinCoreRecord($xw, $row, $authorities);
                 } elseif ($metadataPrefix === 'ead3') {
@@ -4892,9 +6419,6 @@ class ArchivesPlugin
         $xw->startElement('header');
         $xw->writeElement('identifier', $identifier);
         $xw->writeElement('datestamp',  $dtStamp);
-        if (!empty($row['level'])) {
-            $xw->writeElement('setSpec', (string) $row['level']);
-        }
         $xw->endElement(); // header
 
         $xw->startElement('metadata');
@@ -4926,6 +6450,24 @@ class ArchivesPlugin
     }
 
     /**
+     * Returns a LIKE pattern for $q, stripping the last char when len >= 5
+     * so that "disegno" matches "disegni" (shared root "disegn-").
+     */
+    private function archiveSearchPattern(string $q): string
+    {
+        // Escape LIKE wildcards (% and _) and the escape character itself
+        // so literal user input doesn't leak through as wildcards. Backslash
+        // must be escaped first to avoid double-escaping the new sequences.
+        $q    = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $q);
+        // FIX F034: use mb_strlen / mb_substr so the stem trim is multibyte-safe.
+        // strlen()/substr() count bytes — for UTF-8 accented input ("città",
+        // "éditeur") this both miscounts length and can truncate inside a
+        // multibyte sequence, producing an invalid LIKE pattern.
+        $stem = mb_strlen($q, 'UTF-8') >= 5 ? mb_substr($q, 0, -1, 'UTF-8') : $q;
+        return '%' . $stem . '%';
+    }
+
+    /**
      * Filter hook: search.unified.sources
      *
      * Appends archival_units that match $q (via LIKE on reference_code, title
@@ -4947,7 +6489,8 @@ class ArchivesPlugin
         if ($q === '') {
             return $results;
         }
-        $searchPattern = '%' . $q . '%';
+        $archiveBase = \App\Support\RouteTranslator::route('archives') ?: '/archive';
+        $searchPattern = $this->archiveSearchPattern($q);
         $stmt = $this->db->prepare(
             'SELECT id, reference_code, constructed_title
                FROM archival_units
@@ -4969,12 +6512,69 @@ class ArchivesPlugin
         $res = $stmt->get_result();
         if ($res instanceof \mysqli_result) {
             while ($row = $res->fetch_assoc()) {
+                $id    = (int) $row['id'];
+                $title = (string) ($row['constructed_title'] ?? '');
+                $slug  = slugify_text($title);
                 $results[] = [
-                    'id'         => (int) $row['id'],
-                    'label'      => (string) ($row['constructed_title'] ?? ''),
+                    'id'         => $id,
+                    'label'      => $title,
                     'identifier' => (string) ($row['reference_code'] ?? ''),
                     'type'       => 'archive',
-                    'url'        => url('/admin/archives/' . (int) $row['id']),
+                    'url'        => url($archiveBase . ($slug !== '' ? '/' . $slug . '-' . $id : '/' . $id)),
+                ];
+            }
+            $res->free();
+        }
+        $stmt->close();
+        return $results;
+    }
+
+    /**
+     * Hook: frontend.catalog.archive_results
+     * Called from FrontendController::catalog() when a search is active.
+     * Returns archive units matching $q for display in the book catalog page.
+     *
+     * @param array<int, array<string, mixed>> $results
+     * @return array<int, array<string, mixed>>
+     */
+    public function getPublicArchiveResults(array $results, string $q): array
+    {
+        if ($q === '') {
+            return $results;
+        }
+        $archiveBase = \App\Support\RouteTranslator::route('archives') ?: '/archive';
+        $searchPattern = $this->archiveSearchPattern($q);
+        $stmt = $this->db->prepare(
+            'SELECT id, reference_code, level, constructed_title, scope_content
+               FROM archival_units
+              WHERE deleted_at IS NULL
+                AND (
+                    reference_code LIKE ?
+                    OR constructed_title LIKE ?
+                    OR formal_title LIKE ?
+                    OR scope_content LIKE ?
+                )
+              ORDER BY FIELD(level,\'fonds\',\'series\',\'file\',\'item\'), constructed_title
+              LIMIT 6'
+        );
+        if ($stmt === false) {
+            return $results;
+        }
+        $stmt->bind_param('ssss', $searchPattern, $searchPattern, $searchPattern, $searchPattern);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if ($res instanceof \mysqli_result) {
+            while ($row = $res->fetch_assoc()) {
+                $id    = (int) $row['id'];
+                $title = (string) ($row['constructed_title'] ?? '');
+                $slug  = slugify_text($title);
+                $results[] = [
+                    'id'            => $id,
+                    'label'         => $title,
+                    'reference_code' => (string) ($row['reference_code'] ?? ''),
+                    'level'         => (string) ($row['level'] ?? ''),
+                    'scope_content' => (string) ($row['scope_content'] ?? ''),
+                    'url'           => url($archiveBase . ($slug !== '' ? '/' . $slug . '-' . $id : '/' . $id)),
                 ];
             }
             $res->free();
@@ -5054,11 +6654,16 @@ class ArchivesPlugin
             document_path       VARCHAR(500) NULL,
             document_mime       VARCHAR(100) NULL,
             document_filename   VARCHAR(255) NULL,
+            iiif_manifest_url   VARCHAR(2000) NULL,
+            rights_statement_url VARCHAR(500) NULL,
+            ark_identifier      VARCHAR(255) NULL,
+            version_note        VARCHAR(500) NULL,
             created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             deleted_at          TIMESTAMP NULL,
             PRIMARY KEY (id),
             UNIQUE KEY uq_reference (institution_code, reference_code),
+            UNIQUE KEY uq_ark_identifier (ark_identifier),
             KEY idx_parent (parent_id),
             KEY idx_level (level),
             KEY idx_dates (date_start, date_end),
@@ -5164,7 +6769,27 @@ class ArchivesPlugin
             created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (autori_id, authority_id),
             KEY idx_authority_autore (authority_id),
+            CONSTRAINT fk_aal_autore    FOREIGN KEY (autori_id)    REFERENCES autori(id) ON DELETE CASCADE,
             CONSTRAINT fk_aal_authority FOREIGN KEY (authority_id) REFERENCES authority_records(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        SQL;
+    }
+
+    public static function ddlArchivalUnitFiles(): string
+    {
+        return <<<'SQL'
+        CREATE TABLE IF NOT EXISTS archival_unit_files (
+            id                INT UNSIGNED      NOT NULL AUTO_INCREMENT,
+            unit_id           BIGINT UNSIGNED   NOT NULL,
+            file_path         VARCHAR(500)      NOT NULL,
+            file_mime         VARCHAR(127)      NOT NULL DEFAULT 'application/octet-stream',
+            original_filename VARCHAR(255)      NOT NULL DEFAULT '',
+            sort_order        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+            created_at        TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_unit_id (unit_id),
+            CONSTRAINT fk_archival_unit_files_unit
+                FOREIGN KEY (unit_id) REFERENCES archival_units(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         SQL;
     }

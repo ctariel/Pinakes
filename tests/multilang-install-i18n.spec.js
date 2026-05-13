@@ -27,6 +27,11 @@ test.skip(
   'multilang-install-i18n requires E2E_ADMIN_EMAIL, E2E_ADMIN_PASS, E2E_DB_USER, E2E_DB_NAME',
 );
 
+test.skip(
+  process.env.E2E_RUN_INSTALLER_SPECS !== '1',
+  'Installer E2E requires a fresh install sandbox; set E2E_RUN_INSTALLER_SPECS=1 to run it',
+);
+
 // Expected seed values for the `generi` table (top-5 IDs).
 // Source: installer/database/data_<locale>.sql
 const SEED_EXPECTATIONS = {

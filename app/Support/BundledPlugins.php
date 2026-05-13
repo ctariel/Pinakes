@@ -8,13 +8,19 @@ final class BundledPlugins
     public const LIST = [
         'api-book-scraper',
         'archives',
+        'bibframe-linked-data',
         'deezer',
         'dewey-editor',
         'digital-library',
         'discogs',
         'goodlib',
         'musicbrainz',
+        'ncip-server',
+        'oai-pmh-server',
         'open-library',
+        'openurl-resolver',
+        'resource-sync',
+        'viaf-authority',
         'z39-server',
     ];
 

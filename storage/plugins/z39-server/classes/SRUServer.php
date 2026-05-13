@@ -18,6 +18,7 @@ class SRUServer
 {
     private mysqli $db;
     private array $settings;
+    /** @phpstan-ignore property.onlyWritten */
     private ?int $pluginId;
     private ?int $lastLogId = null;
     /** @var array<string,array<string,mixed>> */
@@ -82,7 +83,7 @@ class SRUServer
 
     // SRU namespaces
     private const NS_SRU = 'http://www.loc.gov/zing/srw/';
-    private const NS_DIAG = 'http://www.loc.gov/zing/srw/diagnostic/';
+    private const NS_DIAG = 'info:srw/diagnostic/1/';
 
     /**
      * Constructor
@@ -196,7 +197,7 @@ class SRUServer
         $record->appendChild($recordData);
 
         // Explain record
-        $explain = $xml->createElement('explain');
+        $explain = $xml->createElementNS('http://explain.z3950.org/dtd/2.1/', 'explain');
         $recordData->appendChild($explain);
 
         // Server info
@@ -264,10 +265,11 @@ class SRUServer
 
         $supportedFormats = explode(',', $this->settings['supported_formats'] ?? 'marcxml,dc');
         $formatSchemas = [
-            'marcxml' => 'info:srw/schema/1/marcxml-v1.1',
-            'dc' => 'info:srw/schema/1/dc-v1.1',
-            'mods' => 'info:srw/schema/1/mods-v3.6',
-            'oai_dc' => 'http://www.openarchives.org/OAI/2.0/oai_dc/'
+            'marcxml'    => 'info:srw/schema/1/marcxml-v1.1',
+            'dc'         => 'info:srw/schema/1/dc-v1.1',
+            'mods'       => 'info:srw/schema/1/mods-v3.6',
+            'oai_dc'     => 'http://www.openarchives.org/OAI/2.0/oai_dc/',
+            'unimarcxml' => 'info:srw/schema/8/unimarcxml-v0.1',
         ];
 
         foreach ($supportedFormats as $format) {
@@ -332,7 +334,7 @@ class SRUServer
             $records = $this->executeDataQuery($sqlQuery['data']);
 
             // Format response
-            return $this->formatSearchResponse($version, $query, $totalRecords, $startRecord, count($records), $records, $recordSchema);
+            return $this->formatSearchResponse($version, $query, $totalRecords, $startRecord, count($records), $records, $recordSchema, $maximumRecords);
         } catch (\Z39Server\Exceptions\UnsupportedIndexException $e) {
             return $this->errorResponse(16, $e->getMessage(), $version);
         } catch (\Z39Server\Exceptions\InvalidCQLSyntaxException | \Z39Server\Exceptions\UnsupportedRelationException $e) {
@@ -363,7 +365,7 @@ class SRUServer
         $maximumTerms = min((int) ($params['maximumTerms'] ?? 10), 100);
 
         if (empty($scanClause)) {
-            return $this->errorResponse(7, 'Mandatory parameter not supplied: scanClause', $version);
+            return $this->errorResponse(7, 'Mandatory parameter not supplied: scanClause', $version, 'scan');
         }
 
         try {
@@ -375,17 +377,17 @@ class SRUServer
 
             return $this->formatScanResponse($version, $scanClause, $terms, $responsePosition);
         } catch (\Z39Server\Exceptions\UnsupportedIndexException $e) {
-            return $this->errorResponse(16, $e->getMessage(), $version);
+            return $this->errorResponse(16, $e->getMessage(), $version, 'scan');
         } catch (\Z39Server\Exceptions\InvalidCQLSyntaxException | \Z39Server\Exceptions\UnsupportedRelationException $e) {
-            return $this->errorResponse(10, $e->getMessage(), $version);
+            return $this->errorResponse(10, $e->getMessage(), $version, 'scan');
         } catch (\Z39Server\Exceptions\DatabaseException $e) {
             // SECURITY FIX: Don't expose database error details
             \App\Support\SecureLogger::error("[SRU Server] Database error in scan: " . $e->getMessage());
-            return $this->errorResponse(1, 'A database error occurred. Please try again later.', $version);
+            return $this->errorResponse(1, 'A database error occurred. Please try again later.', $version, 'scan');
         } catch (\Throwable $e) {
             // SECURITY FIX: Don't expose system error details
             \App\Support\SecureLogger::error("[SRU Server] Error in scan: " . $e->getMessage());
-            return $this->errorResponse(1, 'An error occurred while scanning the index.', $version);
+            return $this->errorResponse(1, 'An error occurred while scanning the index.', $version, 'scan');
         }
     }
 
@@ -436,7 +438,7 @@ class SRUServer
                     p.scaffale_id,
                     p.mensola_id
                 {$baseQuery}
-                " . $this->buildSortClause($ast['sortKeys'] ?? '') . "
+                " . $this->buildSortClause($sortKeys) . "
                 LIMIT " . (int) $maximumRecords . " OFFSET " . (int) $offset
         ];
     }
@@ -786,7 +788,8 @@ class SRUServer
         int $startRecord,
         int $returnedRecords,
         array $records,
-        string $recordSchema
+        string $recordSchema,
+        int $maximumRecords = 10
     ): string {
         $xml = new \DOMDocument('1.0', 'UTF-8');
         $xml->formatOutput = true;
@@ -794,32 +797,54 @@ class SRUServer
         $root = $xml->createElementNS(self::NS_SRU, 'searchRetrieveResponse');
         $xml->appendChild($root);
 
-        // Add version
-        $versionEl = $xml->createElement('version', $this->escapeXml($version));
+        $ns = self::NS_SRU;
+
+        // Add version (FIX 1: use createElementNS for SRU child elements)
+        $versionEl = $xml->createElementNS($ns, 'version', $this->escapeXml($version));
         $root->appendChild($versionEl);
 
-        // Add number of records
-        $numRecords = $xml->createElement('numberOfRecords', (string) $totalRecords);
+        // Add number of records (FIX 1)
+        $numRecords = $xml->createElementNS($ns, 'numberOfRecords', (string) $totalRecords);
         $root->appendChild($numRecords);
 
+        // FIX 3: nextRecordPosition when more records exist beyond this page
+        $nextPos = $startRecord + $returnedRecords;
+        if ($returnedRecords > 0 && $nextPos <= $totalRecords) {
+            $root->appendChild($xml->createElementNS($ns, 'nextRecordPosition', (string) $nextPos));
+        }
+
         // Add records
-        $formatter = RecordFormatter::create($recordSchema, $xml);
+        $schemaKey = strtolower($recordSchema);
+        $formatter = RecordFormatter::create($schemaKey, $xml);
+
+        // FIX 5: use mods-v3.6 consistently
+        $schemaUriMap = [
+            'marcxml'    => 'info:srw/schema/1/marcxml-v1.1',
+            'dc'         => 'info:srw/schema/1/dc-v1.1',
+            'mods'       => 'info:srw/schema/1/mods-v3.6',
+            'oai_dc'     => 'http://www.openarchives.org/OAI/2.0/oai_dc/',
+            'unimarcxml' => 'info:srw/schema/8/unimarcxml-v0.1',
+        ];
+        $schemaUri = $schemaUriMap[$schemaKey] ?? $recordSchema;
+
+        $recordsEl = $xml->createElementNS($ns, 'records');
+        $root->appendChild($recordsEl);
 
         $position = $startRecord;
         foreach ($records as $record) {
-            $recordEl = $xml->createElement('record');
-            $root->appendChild($recordEl);
+            $recordEl = $xml->createElementNS($ns, 'record');
+            $recordsEl->appendChild($recordEl);
 
-            $recordSchemaEl = $xml->createElement('recordSchema', $this->escapeXml($recordSchema));
+            $recordSchemaEl = $xml->createElementNS($ns, 'recordSchema', $this->escapeXml($schemaUri));
             $recordEl->appendChild($recordSchemaEl);
 
-            $recordPacking = $xml->createElement('recordPacking', 'xml');
+            $recordPacking = $xml->createElementNS($ns, 'recordPacking', 'xml');
             $recordEl->appendChild($recordPacking);
 
-            $recordPosition = $xml->createElement('recordPosition', (string) $position);
+            $recordPosition = $xml->createElementNS($ns, 'recordPosition', (string) $position);
             $recordEl->appendChild($recordPosition);
 
-            $recordData = $xml->createElement('recordData');
+            $recordData = $xml->createElementNS($ns, 'recordData');
             $recordEl->appendChild($recordData);
 
             $formattedRecord = $formatter->format($record);
@@ -828,11 +853,11 @@ class SRUServer
             $position++;
         }
 
-        // Echo query
-        $echoedQuery = $xml->createElement('echoedSearchRetrieveRequest');
+        // Echo query (FIX 1)
+        $echoedQuery = $xml->createElementNS($ns, 'echoedSearchRetrieveRequest');
         $root->appendChild($echoedQuery);
 
-        $queryEl = $xml->createElement('query', $this->escapeXml($query));
+        $queryEl = $xml->createElementNS($ns, 'query', $this->escapeXml($query));
         $echoedQuery->appendChild($queryEl);
 
         return $xml->saveXML();
@@ -964,7 +989,6 @@ class SRUServer
      * @param string $version SRU version
      * @param string $scanClause Scan clause
      * @param int $responsePosition Response position
-     * @param int $maximumTerms Maximum terms
      * @return string XML response
      */
     private function formatScanResponse(
@@ -979,29 +1003,32 @@ class SRUServer
         $root = $xml->createElementNS(self::NS_SRU, 'scanResponse');
         $xml->appendChild($root);
 
-        $versionEl = $xml->createElement('version', $this->escapeXml($version));
+        $ns = self::NS_SRU;
+
+        // FIX 1b: use createElementNS for all SRU root-level child elements
+        $versionEl = $xml->createElementNS($ns, 'version', $this->escapeXml($version));
         $root->appendChild($versionEl);
 
-        $termsEl = $xml->createElement('terms');
+        $termsEl = $xml->createElementNS($ns, 'terms');
         $root->appendChild($termsEl);
 
         foreach ($terms as $offset => $termData) {
-            $termEl = $xml->createElement('term');
+            $termEl = $xml->createElementNS($ns, 'term');
             $termsEl->appendChild($termEl);
 
-            $value = $xml->createElement('value', $this->escapeXml($termData['value'] ?? ''));
+            $value = $xml->createElementNS($ns, 'value', $this->escapeXml($termData['value'] ?? ''));
             $termEl->appendChild($value);
 
-            $number = $xml->createElement('numberOfRecords', (string) ($termData['frequency'] ?? 0));
+            $number = $xml->createElementNS($ns, 'numberOfRecords', (string) ($termData['frequency'] ?? 0));
             $termEl->appendChild($number);
 
-            $position = $xml->createElement('position', (string) ($responsePosition + $offset));
+            $position = $xml->createElementNS($ns, 'position', (string) ($responsePosition + $offset));
             $termEl->appendChild($position);
         }
 
-        $echoed = $xml->createElement('echoedScanRequest');
+        $echoed = $xml->createElementNS($ns, 'echoedScanRequest');
         $root->appendChild($echoed);
-        $echoed->appendChild($xml->createElement('scanClause', $this->escapeXml($scanClause)));
+        $echoed->appendChild($xml->createElementNS($ns, 'scanClause', $this->escapeXml($scanClause)));
 
         return $xml->saveXML();
     }
@@ -1012,32 +1039,42 @@ class SRUServer
      * @param int $code Error code
      * @param string $message Error message
      * @param string $version SRU version
+     * @param string $operation SRU operation context ('searchRetrieve', 'scan', 'explain')
      * @return string XML error response
      */
-    private function errorResponse(int $code, string $message, string $version = '1.2'): string
+    private function errorResponse(int $code, string $message, string $version = '1.2', string $operation = 'searchRetrieve'): string
     {
         $xml = new \DOMDocument('1.0', 'UTF-8');
         $xml->formatOutput = true;
 
-        $root = $xml->createElementNS(self::NS_SRU, 'searchRetrieveResponse');
+        $rootElement = match ($operation) {
+            'scan'    => 'scanResponse',
+            'explain' => 'explainResponse',
+            default   => 'searchRetrieveResponse',
+        };
+
+        $root = $xml->createElementNS(self::NS_SRU, $rootElement);
         $xml->appendChild($root);
 
-        $versionEl = $xml->createElement('version', $this->escapeXml($version));
+        $ns = self::NS_SRU;
+
+        $versionEl = $xml->createElementNS($ns, 'version', $this->escapeXml($version));
         $root->appendChild($versionEl);
 
-        $diagnostics = $xml->createElement('diagnostics');
+        $diagnostics = $xml->createElementNS($ns, 'diagnostics');
         $root->appendChild($diagnostics);
 
-        $diagnostic = $xml->createElement('diagnostic');
+        $diagnostic = $xml->createElementNS($ns, 'diagnostic');
         $diagnostics->appendChild($diagnostic);
 
-        $uri = $xml->createElement('uri', self::NS_DIAG . $code);
+        // FIX F086: diagnostic <uri>/<details>/<message> belong in NS_DIAG per SRU spec
+        $uri = $xml->createElementNS(self::NS_DIAG, 'uri', self::NS_DIAG . $code);
         $diagnostic->appendChild($uri);
 
-        $details = $xml->createElement('details', $this->escapeXml($message));
+        $details = $xml->createElementNS(self::NS_DIAG, 'details', $this->escapeXml($message));
         $diagnostic->appendChild($details);
 
-        $messageEl = $xml->createElement('message', $this->escapeXml($message));
+        $messageEl = $xml->createElementNS(self::NS_DIAG, 'message', $this->escapeXml($message));
         $diagnostic->appendChild($messageEl);
 
         return $xml->saveXML();
@@ -1096,6 +1133,11 @@ class SRUServer
             INSERT INTO z39_access_logs (ip_address, user_agent, operation, query, format, created_at)
             VALUES (?, ?, ?, ?, ?, NOW())
         ");
+
+        // FIX 4: null guard — table may be unavailable (e.g. during migration)
+        if ($stmt === false) {
+            return;
+        }
 
         $stmt->bind_param('sssss', $ipAddress, $userAgent, $operation, $query, $format);
         $stmt->execute();

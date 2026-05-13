@@ -44,7 +44,14 @@ $levelBadge = [
     'file'   => 'bg-green-100 text-green-800',
     'item'   => 'bg-gray-100 text-gray-800',
 ];
-$badgeClass = $levelBadge[(string) $row['level']] ?? 'bg-gray-100 text-gray-800';
+$levelLabel = [
+    'fonds'  => __('Fondo'),
+    'series' => __('Serie'),
+    'file'   => __('Fascicolo'),
+    'item'   => __('Unità'),
+];
+$badgeClass  = $levelBadge[(string) $row['level']] ?? 'bg-gray-100 text-gray-800';
+$levelText   = $levelLabel[(string) $row['level']] ?? $v('level');
 
 $id = (int) $row['id'];
 ?>
@@ -58,7 +65,7 @@ $id = (int) $row['id'];
         <div>
             <div class="flex items-center gap-3 mb-1">
                 <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded <?= $badgeClass ?>">
-                    <?= $v('level') ?>
+                    <?= $e($levelText) ?>
                 </span>
                 <span class="font-mono text-sm text-gray-500"><?= $v('reference_code') ?></span>
             </div>
@@ -216,6 +223,58 @@ $id = (int) $row['id'];
                     <dd class="col-span-2 text-sm text-gray-900 font-mono"><?= $v('local_classification') ?></dd>
                 </div>
             <?php endif; ?>
+            <?php if (!empty($row['ark_identifier'])): ?>
+                <div class="px-6 py-3 grid grid-cols-3 gap-4">
+                    <dt class="text-sm font-medium text-gray-500"><?= __("Identificatore ARK") ?></dt>
+                    <dd class="col-span-2 text-sm text-gray-900 font-mono"><?= $v('ark_identifier') ?></dd>
+                </div>
+            <?php endif; ?>
+            <?php if (!empty($row['rights_statement_url'])): ?>
+                <?php
+                $rightsUrl      = trim((string) $row['rights_statement_url']);
+                $isSafeRightsUrl = filter_var($rightsUrl, FILTER_VALIDATE_URL) !== false
+                    && (bool) preg_match('/^https?:\/\//i', $rightsUrl);
+                ?>
+                <div class="px-6 py-3 grid grid-cols-3 gap-4">
+                    <dt class="text-sm font-medium text-gray-500"><?= __("Dichiarazione diritti") ?></dt>
+                    <dd class="col-span-2 text-sm text-gray-900">
+                        <?php if ($isSafeRightsUrl): ?>
+                            <a href="<?= $e($rightsUrl) ?>" target="_blank" rel="noopener noreferrer"
+                               class="text-blue-600 hover:underline font-mono text-xs">
+                                <?= $e($rightsUrl) ?>
+                            </a>
+                        <?php else: ?>
+                            <span class="font-mono text-xs"><?= $e($rightsUrl) ?></span>
+                        <?php endif; ?>
+                    </dd>
+                </div>
+            <?php endif; ?>
+            <?php if (!empty($row['iiif_manifest_url'])): ?>
+                <?php
+                $iiifUrl      = trim((string) $row['iiif_manifest_url']);
+                $isSafeIiifUrl = filter_var($iiifUrl, FILTER_VALIDATE_URL) !== false
+                    && (bool) preg_match('/^https?:\/\//i', $iiifUrl);
+                ?>
+                <div class="px-6 py-3 grid grid-cols-3 gap-4">
+                    <dt class="text-sm font-medium text-gray-500"><?= __("URL manifest IIIF (server esterno)") ?></dt>
+                    <dd class="col-span-2 text-sm text-gray-900">
+                        <?php if ($isSafeIiifUrl): ?>
+                            <a href="<?= $e($iiifUrl) ?>" target="_blank" rel="noopener noreferrer"
+                               class="text-blue-600 hover:underline font-mono text-xs">
+                                <?= $e($iiifUrl) ?>
+                            </a>
+                        <?php else: ?>
+                            <span class="font-mono text-xs"><?= $e($iiifUrl) ?></span>
+                        <?php endif; ?>
+                    </dd>
+                </div>
+            <?php endif; ?>
+            <?php if (!empty($row['version_note'])): ?>
+                <div class="px-6 py-3 grid grid-cols-3 gap-4">
+                    <dt class="text-sm font-medium text-gray-500"><?= __("Nota di versione") ?></dt>
+                    <dd class="col-span-2 text-sm text-gray-900"><?= $v('version_note') ?></dd>
+                </div>
+            <?php endif; ?>
             <?php if (!empty($row['updated_at']) && $row['updated_at'] !== $row['created_at']): ?>
                 <div class="px-6 py-3 grid grid-cols-3 gap-4">
                     <dt class="text-sm font-medium text-gray-500"><?= __("Ultima modifica") ?></dt>
@@ -228,7 +287,7 @@ $id = (int) $row['id'];
     <!-- Cover image + downloadable document -->
     <div class="bg-white shadow rounded-lg overflow-hidden mt-6">
         <div class="px-6 py-3 bg-gray-50 border-b">
-            <h2 class="text-sm font-semibold text-gray-700"><?= __("Copertina e documento") ?></h2>
+            <h2 class="text-sm font-semibold text-gray-700"><?= __("Copertina e documenti") ?></h2>
         </div>
         <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
             <!-- Cover -->
@@ -261,33 +320,58 @@ $id = (int) $row['id'];
                 </form>
             </div>
 
-            <!-- Document -->
+            <!-- Documenti (multi-file) -->
+            <?php /** @var list<array{id:int,file_path:string,file_mime:string,original_filename:string,sort_order:int}> $unit_files */ ?>
             <div>
                 <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                    <?= __("Documento scaricabile") ?>
+                    <?= __("Documenti scaricabili") ?>
                 </h3>
-                <?php if (!empty($row['document_path'])): ?>
-                    <div class="border border-gray-200 rounded-md p-3 mb-3 bg-gray-50">
-                        <p class="text-sm text-gray-900 mb-1">
-                            <i class="fas fa-file-alt mr-1"></i>
-                            <a href="<?= $e(url((string) $row['document_path'])) ?>"
-                               target="_blank" rel="noopener"
-                               class="text-blue-600 hover:underline">
-                                <?= $e((string) ($row['document_filename'] ?? basename((string) $row['document_path']))) ?>
-                            </a>
+                <?php
+                // Legacy fallback: if no multi-file entries yet, show the old
+                // single-document columns so pre-migration data remains visible.
+                $legacyDocPath = (string) ($row['document_path'] ?? '');
+                $legacyDocMime = (string) ($row['document_mime'] ?? 'application/octet-stream');
+                $legacyDocName = (string) ($row['document_filename'] ?? basename($legacyDocPath));
+                $showLegacy    = empty($unit_files) && $legacyDocPath !== '';
+                ?>
+                <?php if (!empty($unit_files)): ?>
+                    <ul class="divide-y divide-gray-200 border border-gray-200 rounded-md mb-3">
+                        <?php foreach ($unit_files as $uf): ?>
+                            <li class="flex items-center justify-between px-3 py-2 bg-gray-50 hover:bg-gray-100">
+                                <div class="min-w-0 flex-1 mr-3">
+                                    <a href="<?= $e(url((string) $uf['file_path'])) ?>"
+                                       target="_blank" rel="noopener"
+                                       class="text-sm text-blue-600 hover:underline truncate block">
+                                        <i class="fas fa-file-alt mr-1"></i>
+                                        <?= $e((string) ($uf['original_filename'] ?: basename((string) $uf['file_path']))) ?>
+                                    </a>
+                                    <span class="text-xs text-gray-400 font-mono"><?= $e((string) $uf['file_mime']) ?></span>
+                                </div>
+                                <form method="POST"
+                                      action="<?= $e(url('/admin/archives/' . $id . '/files/' . (int) $uf['id'] . '/delete')) ?>"
+                                      class="inline flex-shrink-0"
+                                      onsubmit="return confirm(<?= $jsAttr(__("Rimuovere questo file?")) ?>);">
+                                    <input type="hidden" name="csrf_token" value="<?= $e(\App\Support\Csrf::ensureToken()) ?>">
+                                    <button type="submit" class="text-xs text-red-600 hover:underline">
+                                        <?= __("Rimuovi") ?>
+                                    </button>
+                                </form>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php elseif ($showLegacy): ?>
+                    <div class="border border-yellow-200 rounded-md mb-3 bg-yellow-50 px-3 py-2">
+                        <p class="text-xs text-yellow-700 font-medium mb-1">
+                            <i class="fas fa-info-circle mr-1"></i>
+                            <?= __("Documento precedente (carica uno nuovo per migrare al sistema multi-file)") ?>
                         </p>
-                        <?php if (!empty($row['document_mime'])): ?>
-                            <p class="text-xs text-gray-500 font-mono"><?= $e((string) $row['document_mime']) ?></p>
-                        <?php endif; ?>
+                        <a href="<?= $e(url($legacyDocPath)) ?>" target="_blank" rel="noopener"
+                           class="text-sm text-blue-600 hover:underline truncate block">
+                            <i class="fas fa-file-alt mr-1"></i>
+                            <?= $e($legacyDocName ?: basename($legacyDocPath)) ?>
+                        </a>
+                        <span class="text-xs text-gray-400 font-mono"><?= $e($legacyDocMime) ?></span>
                     </div>
-                    <form method="POST" action="<?= $e(url('/admin/archives/' . $id . '/remove-asset')) ?>"
-                          class="inline" onsubmit="return confirm('<?= $e(__("Rimuovere il documento?")) ?>');">
-                        <input type="hidden" name="csrf_token" value="<?= $e(\App\Support\Csrf::ensureToken()) ?>">
-                        <input type="hidden" name="type" value="document">
-                        <button type="submit" class="text-xs text-red-600 hover:underline">
-                            <?= __("Rimuovi documento") ?>
-                        </button>
-                    </form>
                 <?php else: ?>
                     <p class="text-xs text-gray-500 italic mb-3"><?= __("Nessun documento caricato.") ?></p>
                 <?php endif; ?>
@@ -298,7 +382,7 @@ $id = (int) $row['id'];
                            accept="application/pdf,application/epub+zip,audio/mpeg,audio/mp4,audio/ogg,audio/wav,video/mp4,video/webm,image/tiff,image/jpeg,image/png" required
                            class="block w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
                     <p class="text-xs text-gray-400"><?= __("PDF, ePub, audio (mp3/m4a/ogg/wav), video (mp4/webm), immagini (tiff/jpg/png). Max 200 MB.") ?></p>
-                    <button type="submit" class="btn-secondary text-xs"><?= __("Carica documento") ?></button>
+                    <button type="submit" class="btn-secondary text-xs"><?= __("Aggiungi documento") ?></button>
                 </form>
             </div>
         </div>

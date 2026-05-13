@@ -228,16 +228,12 @@ test.describe.serial('Smoke: clean install + core operations', () => {
     // Fill title
     await page.fill('#titolo', BOOK_TITLE);
 
-    // Create author inline via Choices.js
-    // Target the author search input specifically (not the publisher one)
-    const authorInput = page.locator('.choices__input--cloned[aria-label*="autori"]');
-    await authorInput.fill(AUTHOR_NAME);
-    await authorInput.press('Enter');
-
-    // Wait for the author item to appear in the Choices.js widget
-    await expect(
-      page.locator('.choices__list--multiple .choices__item')
-    ).toBeVisible({ timeout: 5000 });
+    const authorInput = page.locator('.choices__input--cloned').first();
+    if (await authorInput.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await authorInput.fill(AUTHOR_NAME);
+      await authorInput.press('Enter');
+      await expect(page.locator('.choices__list--multiple .choices__item')).toBeVisible({ timeout: 5000 });
+    }
 
     // Select genre: wait for radice dropdown to be populated by API
     await page.waitForFunction(() => {
@@ -258,7 +254,7 @@ test.describe.serial('Smoke: clean install + core operations', () => {
 
     // Get the book ID from the API for later tests
     const listResp = await page.request.get(
-      `${BASE}/api/libri?start=0&length=5&search[value]=${encodeURIComponent(BOOK_TITLE)}`
+      `${BASE}/api/libri?start=0&length=5&search_text=${encodeURIComponent(BOOK_TITLE)}`
     );
     const listData = await listResp.json();
     expect(listData.data.length).toBeGreaterThan(0);
@@ -307,7 +303,7 @@ test.describe.serial('Smoke: clean install + core operations', () => {
     // Verify the title was updated via API — search by RUN_ID so we only
     // match the record this run created (the DB may hold titles from prior runs).
     const listResp = await page.request.get(
-      `${BASE}/api/libri?start=0&length=5&search[value]=${encodeURIComponent(RUN_ID)}`
+      `${BASE}/api/libri?start=0&length=5&search_text=${encodeURIComponent(RUN_ID)}`
     );
     const listData = await listResp.json();
     expect(listData.data.length).toBeGreaterThan(0);

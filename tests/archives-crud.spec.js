@@ -252,7 +252,7 @@ test.describe.serial('Archives plugin CRUD (#103 phase 1d)', () => {
         // the rest of Pinakes). The button is <button type="button">; clicking
         // it opens the swal modal — clicking .swal2-confirm fires the real
         // form submit. See views/show.php archivesSwalConfirm helper.
-        await page.click('form button:has-text("Elimina")');
+        await page.locator(`form[action$="/admin/archives/${seriesId}/delete"] button`).click();
         await page.locator('.swal2-confirm').click();
         await page.waitForURL(/\/admin\/archives$/, { timeout: 10000 });
 

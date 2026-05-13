@@ -14,6 +14,11 @@ const DB_PASS = process.env.E2E_DB_PASS   || '';
 const DB_NAME = process.env.E2E_DB_NAME   || '';
 const DB_SOCKET = process.env.E2E_DB_SOCKET || '';
 
+test.skip(
+  process.env.E2E_RUN_INSTALLER_SPECS !== '1',
+  'Installer E2E requires a fresh install sandbox; set E2E_RUN_INSTALLER_SPECS=1 to run it',
+);
+
 let appReady = false;
 
 test.describe.serial('Issue #112 — install English, expect English on first login', () => {

@@ -73,7 +73,13 @@ $csrfToken = \App\Support\Csrf::ensureToken();
     <?php endif; ?>
 
     <?php if ($testResult): ?>
-        <div class="mb-6 bg-<?php echo $testResult['success'] ? 'green' : 'yellow'; ?>-50 border border-<?php echo $testResult['success'] ? 'green' : 'yellow'; ?>-200 text-<?php echo $testResult['success'] ? 'green' : 'yellow'; ?>-800 px-4 py-3 rounded-lg">
+        <?php
+        /** @phpstan-ignore ternary.alwaysFalse */
+        $testCssClass = $testResult['success']
+            ? 'bg-green-50 border border-green-200 text-green-800'
+            : 'bg-yellow-50 border border-yellow-200 text-yellow-800';
+        ?>
+        <div class="mb-6 <?= $testCssClass ?> px-4 py-3 rounded-lg">
             <strong>Test Connessione:</strong> <?php echo htmlspecialchars($testResult['message']); ?>
         </div>
     <?php endif; ?>

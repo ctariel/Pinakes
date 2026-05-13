@@ -39,6 +39,33 @@ function dbExec(sql) {
   execFileSync('mysql', args, { encoding: 'utf8', stdio: 'pipe', timeout: 10000 });
 }
 
+async function gotoBulkEnrich(page, attempts = 6) {
+  let lastError;
+  let sawGatewayTimeout = false;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      await page.goto(`${BASE}/admin/libri/bulk-enrich`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      });
+      const body = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+      if (!body.includes('Gateway Timeout')) {
+        return;
+      }
+      sawGatewayTimeout = true;
+    } catch (err) {
+      lastError = err;
+    }
+    await page.waitForTimeout(5000);
+  }
+  if (lastError) {
+    throw lastError;
+  }
+  if (sawGatewayTimeout) {
+    throw new Error('Bulk enrich page kept returning Gateway Timeout');
+  }
+}
+
 // ─── Test data ────────────────────────────────────────────────────────────
 // Real ISBNs for enrichment tests (well-known books with covers on Open Library)
 const ISBN_MOCKINGBIRD = '9780061120084';  // To Kill a Mockingbird
@@ -127,6 +154,16 @@ test.describe.serial('Bulk Enrichment', () => {
     await page.fill('input[name="password"]', ADMIN_PASS);
     await page.click('button[type="submit"]');
     await page.waitForURL(/\/admin\//, { timeout: 15000 });
+
+    // Pre-clean stale rows from interrupted runs before inserting fixed real
+    // ISBN fixtures. The ISBN columns are unique, so an old ENRICH_* row can
+    // poison the next full-suite run before this suite reaches afterAll.
+    dbExec("UPDATE libri SET isbn13 = NULL, isbn10 = NULL, ean = NULL WHERE titolo LIKE 'ENRICH\\_%'");
+    dbExec("DELETE FROM libri WHERE titolo LIKE 'ENRICH\\_%'");
+    dbExec(
+      `UPDATE libri SET isbn13 = NULL
+        WHERE isbn13 IN ('${ISBN_MOCKINGBIRD}', '${ISBN_1984}', '${ISBN_GATSBY}', '${ISBN_CATCHER}', '${ISBN_HOBBIT}', '${ISBN_NOOVERWRITE1}', '${ISBN_NOOVERWRITE2}', '${ISBN_FAKE}')`
+    );
 
     // Seed 5 test books with ISBNs but NO cover and NO description
     const isbns = [ISBN_MOCKINGBIRD, ISBN_1984, ISBN_GATSBY, ISBN_CATCHER, ISBN_HOBBIT];
@@ -613,17 +650,16 @@ test.describe.serial('Bulk Enrichment', () => {
 
   test('18. Bulk enrich page shows stats cards', async () => {
     test.skip(!featureAvailable, 'Bulk enrich not available');
+    test.setTimeout(240000);
 
-    await page.goto(`${BASE}/admin/libri/bulk-enrich`);
-    await page.waitForLoadState('domcontentloaded');
+    await gotoBulkEnrich(page);
+    await expect(page.locator('body')).not.toContainText('Gateway Timeout');
     const content = await page.content();
 
-    // Page should contain stat labels (Italian) for books and missing covers/descriptions
-    const hasBookCount = content.includes('libri') || content.includes('Libri');
-    const hasCoverStat = content.includes('copertina') || content.includes('Copertina') ||
-                         content.includes('copertine') || content.includes('Copertine');
-    const hasDescStat  = content.includes('descrizione') || content.includes('Descrizione') ||
-                         content.includes('descrizioni') || content.includes('Descrizioni');
+    // Page should contain localized stat labels for books and missing covers/descriptions.
+    const hasBookCount = /\b(libri|livres|books)\b/i.test(content);
+    const hasCoverStat = /\b(copertin[ae]|couvertures?|covers?)\b/i.test(content);
+    const hasDescStat  = /\b(descrizioni?|descriptions?)\b/i.test(content);
 
     expect(hasBookCount).toBe(true);
     expect(hasCoverStat || hasDescStat).toBe(true);
@@ -631,9 +667,9 @@ test.describe.serial('Bulk Enrichment', () => {
 
   test('19. Bulk enrich page has "Arricchisci Adesso" button', async () => {
     test.skip(!featureAvailable, 'Bulk enrich not available');
+    test.setTimeout(240000);
 
-    await page.goto(`${BASE}/admin/libri/bulk-enrich`);
-    await page.waitForLoadState('domcontentloaded');
+    await gotoBulkEnrich(page);
 
     // Look for the action button — by text or by form action
     const buttonByText = page.locator('button, a').filter({
@@ -651,9 +687,9 @@ test.describe.serial('Bulk Enrichment', () => {
 
   test('20. Bulk enrich page has toggle switch', async () => {
     test.skip(!featureAvailable, 'Bulk enrich not available');
+    test.setTimeout(240000);
 
-    await page.goto(`${BASE}/admin/libri/bulk-enrich`);
-    await page.waitForLoadState('domcontentloaded');
+    await gotoBulkEnrich(page);
 
     // Toggle can be a checkbox, a switch element, or a custom toggle
     const toggle = page.locator(

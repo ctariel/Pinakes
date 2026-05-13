@@ -1,0 +1,206 @@
+name: Code Quality
+
+# Fast static-analysis checks: dependency CVEs, translation drift,
+# route integrity, Tailwind JIT safety, plugin schema rules.
+# No database or browser required — runs in ~60 seconds.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.php'
+      - '**.js'
+      - 'locale/**'
+      - 'composer.json'
+      - 'package.json'
+      - 'installer/database/schema.sql'
+      - 'version.json'
+      - '.github/workflows/ci-quality.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Static quality checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+          github-token: ''
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── Dependency CVE scanning ───────────────────────────────────────────
+      - name: composer audit (known CVEs)
+        run: |
+          composer install --no-interaction --prefer-dist --quiet
+          composer audit --no-dev --abandoned=ignore 2>&1 || { echo "⚠ composer audit: vulnerabilities found (see above)"; exit 1; }
+
+      - name: npm audit (known CVEs)
+        run: |
+          npm ci --silent 2>/dev/null || npm install --silent
+          npm audit --audit-level=high 2>&1 || { echo "⚠ npm audit: high/critical vulnerabilities found"; exit 1; }
+        continue-on-error: true  # Warn, don't block — js devDependencies may have unfixed advisories
+
+      # ── Translation completeness ──────────────────────────────────────────
+      - name: Translation key parity (en_US ↔ de_DE, placeholders en/de/it)
+        run: |
+          FAILED=0
+          # 1. Exact key-set parity for non-Italian translations only.
+          # it_IT is intentionally sparse: __() falls back to the key itself
+          # (keys are native Italian text), so it_IT.json only needs overrides.
+          for PAIR in "en_US:de_DE"; do
+            A=${PAIR%%:*}; B=${PAIR##*:}
+            MISSING=$(comm -23 <(jq -r 'keys[]' locale/${A}.json | sort) <(jq -r 'keys[]' locale/${B}.json | sort))
+            EXTRA=$(comm -13 <(jq -r 'keys[]' locale/${A}.json | sort) <(jq -r 'keys[]' locale/${B}.json | sort))
+            if [ -n "$MISSING" ]; then
+              echo "✗ ${B}.json manca di chiavi presenti in ${A}.json:"
+              echo "$MISSING" | sed 's/^/    /'
+              FAILED=1
+            fi
+            if [ -n "$EXTRA" ]; then
+              echo "✗ ${B}.json ha chiavi extra non presenti in ${A}.json:"
+              echo "$EXTRA" | sed 's/^/    /'
+              FAILED=1
+            fi
+          done
+          # 2. Placeholder parity: %s / %d must match count between en_US, de_DE and it_IT
+          python3 - <<'PYEOF'
+          import json, re, sys
+          en = json.load(open('locale/en_US.json'))
+          de = json.load(open('locale/de_DE.json'))
+          it = json.load(open('locale/it_IT.json'))
+          ph = re.compile(r'%(?:\d+\$)?[sd]')
+          failed = 0
+          for locale_name, data in [('de_DE', de), ('it_IT', it)]:
+              for k in en:
+                  if k not in data:
+                      continue
+                  ep = sorted(ph.findall(str(en[k])))
+                  lp = sorted(ph.findall(str(data[k])))
+                  if ep != lp:
+                      print(f'✗ Placeholder mismatch for key "{k[:80]}": en={ep} {locale_name}={lp}')
+                      failed = 1
+          sys.exit(failed)
+          PYEOF
+          [ "$FAILED" -eq 0 ] && echo "✓ Parità chiavi e placeholder confermata" || exit 1
+
+      # ── Route key integrity ───────────────────────────────────────────────
+      - name: Route key integrity (route_path() keys exist in routes_it_IT.json)
+        run: |
+          ROUTE_KEYS=$(python3 -c "import json; d=json.load(open('locale/routes_it_IT.json')); [print(k) for k in d.keys()]")
+          FALLBACK_KEYS=$(php -r "require 'vendor/autoload.php'; echo implode(PHP_EOL, App\\Support\\RouteTranslator::getStaticFallbackKeys());")
+          ALL_KEYS=$(printf '%s\n%s' "$ROUTE_KEYS" "$FALLBACK_KEYS" | sort -u)
+          FAILED=0
+          while IFS= read -r key; do
+            if ! echo "$ALL_KEYS" | grep -qx "$key"; then
+              echo "  ✗ route_path('$key') usato in views ma mancante in routes_it_IT.json o fallbackRoutes"
+              FAILED=1
+            fi
+          done < <(grep -rohE "route_path\('([^']+)'\)" app/Views/ | grep -oE "'[^']+'" | tr -d "'" | sort -u)
+          [ "$FAILED" -eq 0 ] && echo "✓ Tutte le chiavi route_path() esistono in routes_it_IT.json o fallbackRoutes" || exit 1
+
+      # ── Tailwind JIT safety ───────────────────────────────────────────────
+      - name: Tailwind JIT — no dynamic class construction
+        run: |
+          VIOLATIONS=$(grep -rn \
+            -e "'bg-'\s*\.\s*\$" \
+            -e '"bg-"\s*\.\s*\$' \
+            -e "'text-'\s*\.\s*\$" \
+            -e '"text-"\s*\.\s*\$' \
+            -e "'border-'\s*\.\s*\$" \
+            -e '"border-"\s*\.\s*\$' \
+            --include="*.php" app/ storage/plugins/ 2>/dev/null || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "✗ Classi Tailwind costruite dinamicamente (non generate dal JIT):"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "✓ Nessuna classe Tailwind dinamica trovata"
+
+      # ── Plugin ensureSchema() rule ────────────────────────────────────────
+      - name: Plugin ensureSchema() rule (CLAUDE.md absolute rule)
+        run: |
+          FAILED=0
+          for file in storage/plugins/*/*.php; do
+            [ -f "$file" ] || continue
+            if grep -q 'CREATE TABLE' "$file"; then
+              if ! grep -q 'ensureSchema()' "$file"; then
+                echo "  ✗ $(basename $(dirname $file))/$(basename $file): CREATE TABLE senza ensureSchema()"
+                FAILED=1
+              elif ! awk '/function onActivate/,/^[[:space:]]*}/' "$file" | grep -q 'ensureSchema'; then
+                echo "  ✗ $(basename $(dirname $file))/$(basename $file): ensureSchema() non in onActivate()"
+                FAILED=1
+              elif ! awk '/function onInstall/,/^[[:space:]]*}/' "$file" | grep -q 'ensureSchema'; then
+                echo "  ✗ $(basename $(dirname $file))/$(basename $file): ensureSchema() non in onInstall()"
+                FAILED=1
+              else
+                echo "  ✓ $(basename $(dirname $file))/$(basename $file)"
+              fi
+            fi
+          done
+          [ "$FAILED" -eq 0 ] || exit 1
+
+      # ── Soft-delete guard ─────────────────────────────────────────────────
+      - name: Soft-delete guard (libri queries must include deleted_at IS NULL)
+        run: |
+          VIOLATIONS=0
+          while IFS= read -r file; do
+            if grep -qiE 'FROM[[:space:]]+`?libri`?[[:space:],)]' "$file" 2>/dev/null; then
+              if ! grep -qiE 'deleted_at[[:space:]]+IS[[:space:]]+NULL' "$file"; then
+                echo "  ⚠ $file: query FROM libri senza deleted_at IS NULL"
+                VIOLATIONS=$((VIOLATIONS + 1))
+              fi
+            fi
+          done < <(find app/ -name "*.php" -not -path "*/vendor/*")
+          if [ "$VIOLATIONS" -gt 0 ]; then
+            echo "⚠ $VIOLATIONS file potrebbero mancare del soft-delete guard"
+            echo "  Verificare manualmente se le query sono intentenzionali (query admin, conteggi, ecc.)"
+          else
+            echo "✓ Soft-delete guard presente in tutti i file con query su libri"
+          fi
+
+      # ── Autoloader safety ─────────────────────────────────────────────────
+      - name: Autoloader phpstan-free
+        run: |
+          if [ -f vendor/composer/autoload_static.php ]; then
+            COUNT=$(grep -c "phpstan" vendor/composer/autoload_static.php || echo 0)
+            if [ "$COUNT" -gt 0 ]; then
+              echo "✗ autoload_static.php contiene $COUNT riferimenti a phpstan (run composer install --no-dev)"
+              exit 1
+            fi
+            echo "✓ autoloader phpstan-free"
+          else
+            echo "ℹ vendor/ not installed — skipping"
+          fi
+
+      # ── Migration version guard ───────────────────────────────────────────
+      - name: Migration version guard (all migrate_*.sql ≤ version.json)
+        run: |
+          TARGET=$(php -r "echo json_decode(file_get_contents('version.json'))->version;")
+          FAILED=0
+          for f in installer/database/migrations/migrate_*.sql; do
+            V=$(basename "$f" | sed 's/migrate_//;s/\.sql//')
+            if ! php -r "exit(version_compare('$V','$TARGET','<=') ? 0 : 1);"; then
+              echo "  ✗ $(basename $f): $V > $TARGET (sarebbe ignorata dall'updater)"
+              FAILED=1
+            fi
+          done
+          [ "$FAILED" -eq 0 ] && echo "✓ Tutte le migration hanno versione ≤ $TARGET" || exit 1

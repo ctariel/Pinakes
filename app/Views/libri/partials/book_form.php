@@ -81,7 +81,7 @@ $selectedSeriesType = \App\Support\SeriesLabels::canonical($book['tipo_collana']
   </div>
 <?php endif; ?>
 
-    <form id="bookForm" data-mode="<?php echo $modeAttr; ?>" method="post" action="<?php echo $actionAttr; ?>" class="space-y-8" enctype="multipart/form-data">
+    <form id="bookForm" novalidate data-mode="<?php echo $modeAttr; ?>" method="post" action="<?php echo $actionAttr; ?>" class="space-y-8" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars((string)$csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
       
       <!-- Hidden fields for scraped data -->
@@ -90,6 +90,8 @@ $selectedSeriesType = \App\Support\SeriesLabels::canonical($book['tipo_collana']
       <input type="hidden" id="scraped_price" name="scraped_price" value="">
       <input type="hidden" id="scraped_format" name="scraped_format" value="">
       <input type="hidden" id="scraped_series" name="scraped_series" value="">
+      <input type="hidden" id="scraped_numero_serie" name="scraped_numero_serie" value="">
+      <input type="hidden" id="scraped_dimensions" name="scraped_dimensions" value="">
       <input type="hidden" id="scraped_pages" name="scraped_pages" value="">
       <input type="hidden" id="scraped_publisher" name="scraped_publisher" value="">
       <input type="hidden" id="scraped_translator" name="scraped_translator" value="">
@@ -932,7 +934,7 @@ $selectedSeriesType = \App\Support\SeriesLabels::canonical($book['tipo_collana']
                           class="w-4 h-4 rounded border-gray-300 text-gray-900 focus:ring-gray-500"
                           <?= isset($ltFieldsVisibility[$fieldName]) && $ltFieldsVisibility[$fieldName] ? 'checked' : '' ?>
                         >
-                        <span class="text-gray-700"><?= HtmlHelper::e($ltFields[$fieldName]) ?></span>
+                        <span class="text-gray-700"><?= HtmlHelper::e(__($ltFields[$fieldName])) ?></span>
                       </label>
                     <?php endif; ?>
                   <?php endforeach; ?>
@@ -1074,8 +1076,17 @@ function toggleLibraryThingAccordion() {
 }
 
 // Global translation function for JavaScript
-window.__ = function(key) {
-    return i18nTranslations[key] || key;
+window.__ = function(key, ...args) {
+    let translated = i18nTranslations[key] || key;
+    if (args.length > 0) {
+        let argIndex = 0;
+        translated = translated.replace(/%(\d+\$)?[sd]/g, function(match, position) {
+            const index = position ? parseInt(position, 10) - 1 : argIndex++;
+            const value = args[index];
+            return value !== undefined ? String(value) : '';
+        });
+    }
+    return translated;
 };
 
 // Convenience object for direct access
@@ -3709,6 +3720,26 @@ function initializeIsbnImport() {
             } catch (err) {
             }
 
+            // Handle numero_serie (series volume number)
+            try {
+                if (data.numero_serie) {
+                    const input = document.querySelector('input[name="numero_serie"]');
+                    if (input) input.value = data.numero_serie;
+                    const scraped = document.getElementById('scraped_numero_serie');
+                    if (scraped) scraped.value = data.numero_serie;
+                }
+            } catch (err) { }
+
+            // Handle dimensions
+            try {
+                if (data.dimensions) {
+                    const input = document.querySelector('input[name="dimensioni"]');
+                    if (input) input.value = data.dimensions;
+                    const scraped = document.getElementById('scraped_dimensions');
+                    if (scraped) scraped.value = data.dimensions;
+                }
+            } catch (err) { }
+
             // Handle pages
             try {
                 if (data.pages) {
@@ -3906,6 +3937,9 @@ function initializeIsbnImport() {
             if (data.price) fieldsPopulated.push('price');
             if (data.format) fieldsPopulated.push('format');
             if (data.series) fieldsPopulated.push('series');
+            if (data.numero_serie) fieldsPopulated.push('numero_serie');
+            if (data.dimensions) fieldsPopulated.push('dimensions');
+            if (data.classificazione_dewey) fieldsPopulated.push('classificazione_dewey');
             if (data.pages) fieldsPopulated.push('pages');
             if (data.notes) fieldsPopulated.push('notes');
             if (data.isbn) fieldsPopulated.push('ISBN');
