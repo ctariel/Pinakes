@@ -85,7 +85,7 @@ $check(
 $check($source !== false && str_contains($source, 'archival_unit|archives'), 'ListMetadataFormats accepts canonical archival_unit identifier');
 $check($source !== false && str_contains($source, "'noSetHierarchy'"), 'ListSets reports noSetHierarchy');
 $check($source !== false && str_contains($source, "writeElementNs('dc', 'publisher'"), 'Dublin Core emits dc:publisher');
-$check($source !== false && str_contains($source, 'application/rdf+xml'), 'Dublin Core discovery advertises application/rdf+xml');
+$check($source !== false && str_contains($source, "'type' => 'application/xml', 'title' => 'Dublin Core (OAI-DC)'"), 'Dublin Core discovery advertises application/xml');
 $check($source !== false && str_contains($source, 'filename="archives.ead3.xml"'), 'EAD3 export filename matches issue #125');
 
 $layoutSource = file_get_contents(__DIR__ . '/../app/Views/layout.php');

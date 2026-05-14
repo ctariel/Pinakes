@@ -81,7 +81,7 @@ $selectedSeriesType = \App\Support\SeriesLabels::canonical($book['tipo_collana']
   </div>
 <?php endif; ?>
 
-    <form id="bookForm" data-mode="<?php echo $modeAttr; ?>" method="post" action="<?php echo $actionAttr; ?>" class="space-y-8" enctype="multipart/form-data">
+    <form id="bookForm" novalidate data-mode="<?php echo $modeAttr; ?>" method="post" action="<?php echo $actionAttr; ?>" class="space-y-8" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars((string)$csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
       
       <!-- Hidden fields for scraped data -->
@@ -934,7 +934,7 @@ $selectedSeriesType = \App\Support\SeriesLabels::canonical($book['tipo_collana']
                           class="w-4 h-4 rounded border-gray-300 text-gray-900 focus:ring-gray-500"
                           <?= isset($ltFieldsVisibility[$fieldName]) && $ltFieldsVisibility[$fieldName] ? 'checked' : '' ?>
                         >
-                        <span class="text-gray-700"><?= HtmlHelper::e($ltFields[$fieldName]) ?></span>
+                        <span class="text-gray-700"><?= HtmlHelper::e(__($ltFields[$fieldName])) ?></span>
                       </label>
                     <?php endif; ?>
                   <?php endforeach; ?>
@@ -1076,8 +1076,17 @@ function toggleLibraryThingAccordion() {
 }
 
 // Global translation function for JavaScript
-window.__ = function(key) {
-    return i18nTranslations[key] || key;
+window.__ = function(key, ...args) {
+    let translated = i18nTranslations[key] || key;
+    if (args.length > 0) {
+        let argIndex = 0;
+        translated = translated.replace(/%(\d+\$)?[sd]/g, function(match, position) {
+            const index = position ? parseInt(position, 10) - 1 : argIndex++;
+            const value = args[index];
+            return value !== undefined ? String(value) : '';
+        });
+    }
+    return translated;
 };
 
 // Convenience object for direct access
@@ -3711,37 +3720,25 @@ function initializeIsbnImport() {
             } catch (err) {
             }
 
-            // Handle Volume in series (collana)
+            // Handle numero_serie (series volume number)
             try {
                 if (data.numero_serie) {
-                    const numeroSeriesInput = document.querySelector('input[name="numero_serie"]');
-                    if (numeroSeriesInput) {
-                        numeroSeriesInput.value = data.numero_serie;
-                    }
-                    const scrapedNumeroSeries = document.getElementById('scraped_numero_serie');
-                    if (scrapedNumeroSeries) {
-                        scrapedNumeroSeries.value = data.numero_serie;
-                    }
-                } else {
+                    const input = document.querySelector('input[name="numero_serie"]');
+                    if (input) input.value = data.numero_serie;
+                    const scraped = document.getElementById('scraped_numero_serie');
+                    if (scraped) scraped.value = data.numero_serie;
                 }
-            } catch (err) {
-            }
+            } catch (err) { }
 
-            // Handle Dimensions
+            // Handle dimensions
             try {
                 if (data.dimensions) {
-                    const dimensionsInput = document.querySelector('input[name="dimensioni"]');
-                    if (dimensionsInput) {
-                        dimensionsInput.value = data.dimensions;
-                    }
-                    const scrapedDimensions = document.getElementById('scraped_dimensions');
-                    if (scrapedDimensions) {
-                        scrapedDimensions.value = data.dimensions;
-                    }
-                } else {
+                    const input = document.querySelector('input[name="dimensioni"]');
+                    if (input) input.value = data.dimensions;
+                    const scraped = document.getElementById('scraped_dimensions');
+                    if (scraped) scraped.value = data.dimensions;
                 }
-            } catch (err) {
-            }
+            } catch (err) { }
 
             // Handle pages
             try {
@@ -3942,6 +3939,7 @@ function initializeIsbnImport() {
             if (data.series) fieldsPopulated.push('series');
             if (data.numero_serie) fieldsPopulated.push('numero_serie');
             if (data.dimensions) fieldsPopulated.push('dimensions');
+            if (data.classificazione_dewey) fieldsPopulated.push('classificazione_dewey');
             if (data.pages) fieldsPopulated.push('pages');
             if (data.notes) fieldsPopulated.push('notes');
             if (data.isbn) fieldsPopulated.push('ISBN');
@@ -3950,7 +3948,6 @@ function initializeIsbnImport() {
             if (data.keywords) fieldsPopulated.push('keywords');
             if (data.translator) fieldsPopulated.push('translator');
             if (data.illustrator) fieldsPopulated.push('illustrator');
-            if (data.classificazione_dewey) fieldsPopulated.push('classificazione_dewey');
 
             // Show source information panel
             displayScrapeSourceInfo(data);

@@ -25,6 +25,33 @@ function dbExec(sql) {
 // Nirvana - Nevermind (very common CD, reliable on Discogs)
 const TEST_BARCODE = '0720642442524';
 
+async function mockDiscogsScrape(page) {
+  await page.route('**/api/scrape/isbn?**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('isbn') !== TEST_BARCODE) {
+      await route.fallback();
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        title: 'Nevermind',
+        authors: ['Nirvana'],
+        publisher: 'DGC',
+        year: '1991',
+        pubDate: '24 settembre 1991',
+        format: 'CD',
+        tipo_media: 'disco',
+        ean: TEST_BARCODE,
+        source: 'discogs',
+        notes: 'Mocked Discogs release metadata for deterministic E2E coverage',
+      }),
+    });
+  });
+}
+
 test.describe.serial('Discogs Import: full scraping flow', () => {
   /** @type {import('@playwright/test').Page} */
   let page;
@@ -112,6 +139,8 @@ test.describe.serial('Discogs Import: full scraping flow', () => {
   });
 
   test('2. Import CD via barcode in book form', async () => {
+    await mockDiscogsScrape(page);
+
     await page.goto(`${BASE}/admin/libri/crea`);
     await page.waitForLoadState('domcontentloaded');
 
@@ -134,6 +163,12 @@ test.describe.serial('Discogs Import: full scraping flow', () => {
 
     const titleValue = await titleField.inputValue();
     expect(titleValue.toLowerCase()).toContain('nevermind');
+
+    // The form continues to populate related fields (author/publisher/EAN)
+    // after the title is written. Wait for the import cycle to finish before
+    // the next serial test reads those fields.
+    await expect(importBtn, 'Discogs import did not finish populating the form')
+      .toBeEnabled({ timeout: 30000 });
   });
 
   test('3. Verify scraped fields are populated', async () => {
@@ -157,9 +192,14 @@ test.describe.serial('Discogs Import: full scraping flow', () => {
     // Check EAN field has the barcode — and isbn13 MUST be empty.
     // Regression guard: music barcodes must never be stuffed into isbn13
     // (commit 7016608 + normalizeIsbnFields guard).
-    const eanValue = await page.locator('input[name="ean"]').inputValue();
+    await expect.poll(
+      async () => page.locator('input[name="ean"]').inputValue(),
+      {
+        message: 'Barcode must land in ean for music media',
+        timeout: 30000,
+      }
+    ).toBe(TEST_BARCODE);
     const isbn13Value = await page.locator('input[name="isbn13"]').inputValue();
-    expect(eanValue, 'Barcode must land in ean for music media').toBe(TEST_BARCODE);
     expect(isbn13Value, 'isbn13 must stay empty for non-book scraping').toBe('');
   });
 

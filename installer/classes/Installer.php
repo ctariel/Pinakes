@@ -82,12 +82,14 @@ class Installer {
             $normalizedLocale = 'en_US';
         } elseif ($normalizedLocale === 'de' || $normalizedLocale === 'de_de') {
             $normalizedLocale = 'de_DE';
+        } elseif ($normalizedLocale === 'fr' || $normalizedLocale === 'fr_fr') {
+            $normalizedLocale = 'fr_FR';
         } elseif ($normalizedLocale === 'it' || $normalizedLocale === 'it_it') {
             $normalizedLocale = 'it_IT';
         }
 
         // Fallback safety
-        if (!in_array($normalizedLocale, ['it_IT', 'en_US', 'de_DE'], true)) {
+        if (!in_array($normalizedLocale, ['it_IT', 'en_US', 'de_DE', 'fr_FR'], true)) {
             $normalizedLocale = 'it_IT';
         }
 
@@ -257,7 +259,7 @@ class Installer {
         // Get locale from session first (most reliable), fallback to .env
         $locale = $_SESSION['app_locale'] ?? ($this->config['APP_LOCALE'] ?? 'it');
 
-        // Convert locale code to full form (supports it, it_IT, en, en_US)
+        // Convert locale code to full form (supports it, it_IT, en, en_US, de, de_DE, fr, fr_FR)
         $localeMap = [
             'it' => 'it_IT',
             'it_it' => 'it_IT',
@@ -265,6 +267,8 @@ class Installer {
             'en_us' => 'en_US',
             'de' => 'de_DE',
             'de_de' => 'de_DE',
+            'fr' => 'fr_FR',
+            'fr_fr' => 'fr_FR',
         ];
         $normalizedLocale = strtolower(str_replace('-', '_', $locale));
         $fullLocale = $localeMap[$normalizedLocale] ?? 'it_IT';
@@ -798,6 +802,7 @@ class Installer {
             'it' => 'it_IT', 'it_it' => 'it_IT',
             'en' => 'en_US', 'en_us' => 'en_US',
             'de' => 'de_DE', 'de_de' => 'de_DE',
+            'fr' => 'fr_FR', 'fr_fr' => 'fr_FR',
         ];
         $supportedLocales = array_values(array_unique(array_values($localeMap)));
         $normalized = strtolower(str_replace('-', '_', $rawLocale));
@@ -1199,6 +1204,9 @@ HTACCESS;
         if ($locale === 'de' || $locale === 'de_de') {
             return 'de_DE';
         }
+        if ($locale === 'fr' || $locale === 'fr_fr') {
+            return 'fr_FR';
+        }
         if ($locale === 'it' || $locale === 'it_it') {
             return 'it_IT';
         }
@@ -1449,6 +1457,12 @@ HTACCESS;
             }
         };
 
+        // NOTE: Only the 5 historically-default plugins are auto-activated on fresh install.
+        // Other bundled plugins (BundledPlugins::LIST) are registered later by
+        // autoRegisterBundledPlugins() and remain deactivated until admin opt-in.
+        // Keeping new plugins opt-in is safer for fresh installs: it avoids surprising
+        // behavior changes, side effects (extra routes, DB tables, background jobs),
+        // and lets the admin review and enable each plugin consciously.
         // Install all default plugins (excluding scraping-pro)
         $installPlugin('open-library');
         $installPlugin('z39-server', [

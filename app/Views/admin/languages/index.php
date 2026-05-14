@@ -45,6 +45,13 @@ use App\Support\HtmlHelper;
                 <?php unset($_SESSION['flash_warning']); ?>
             <?php endif; ?>
 
+            <?php if (isset($_SESSION['flash_info'])): ?>
+                <div class="mt-3 p-3 bg-blue-50 text-blue-800 border border-blue-200 rounded" role="alert">
+                    <?= HtmlHelper::e($_SESSION['flash_info']) ?>
+                </div>
+                <?php unset($_SESSION['flash_info']); ?>
+            <?php endif; ?>
+
             <!-- Info Box -->
             <div class="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
                 <div class="flex items-start gap-3">

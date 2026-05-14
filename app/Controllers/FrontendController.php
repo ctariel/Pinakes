@@ -416,6 +416,13 @@ class FrontendController
         $query_params = $where_conditions['params'];
         $param_types = $where_conditions['types'];
 
+        // Extra results from plugins (e.g. archive units) when a search is active.
+        $searchTerm = trim((string) ($filters['search'] ?? ''));
+        /** @var array<int, array<string, mixed>> $archiveResults */
+        $archiveResults = $searchTerm !== ''
+            ? \App\Support\Hooks::apply('frontend.catalog.archive_results', [], [$searchTerm])
+            : [];
+
         // Query base senza JOIN con autori per evitare duplicati
         // Include genre parents/grandparents to support filtering at any level
         $base_query = "
@@ -504,6 +511,10 @@ class FrontendController
         $where_conditions = $this->buildWhereConditions($filters, $db);
         $query_params = $where_conditions['params'];
         $param_types = $where_conditions['types'];
+
+        // FIX F001: removed archive results hook from catalogAPI() to avoid
+        // returning archive matches in the search-as-you-type JSON payload.
+        // catalog() still renders archives in its empty-state block.
 
         // Query base senza JOIN con autori per evitare duplicati
         // Include genre parents/grandparents/subgenre to support filtering at any level
@@ -720,14 +731,63 @@ class FrontendController
         $shareUrl = absoluteUrl($canonicalPath);
         $shareTitle = $book['titolo'] ?? '';
 
+        // Check whether the BIBFRAME Linked Data plugin is active.
+        // Done before template include so the view can use $bibframePluginActive.
+        // Uses PluginManager::isActive() which caches per-process — the raw
+        // `SELECT 1 FROM plugins ...` here used to run on every render of the
+        // book-detail page (hottest catalog URL), including anonymous crawls.
+        $bibframePluginActive = false;
+        if ($this->container !== null && $this->container->has('pluginManager')) {
+            try {
+                /** @var \App\Support\PluginManager $pluginManager */
+                $pluginManager = $this->container->get('pluginManager');
+                $bibframePluginActive = $pluginManager->isActive('bibframe-linked-data');
+            } catch (\Throwable $e) {
+                \App\Support\SecureLogger::warning('FrontendController: pluginManager lookup failed', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
         // Render template
         $container = $this->container;
         ob_start();
         include __DIR__ . '/../Views/frontend/book-detail.php';
         $content = ob_get_clean();
 
+        // FAIR Signposting (RFC 9264) — machine-discoverable link relations
+        $bookArr  = is_array($book) ? $book : [];
+        $tipoRes  = \App\Support\MediaLabels::resolveTipoMedia(
+            isset($bookArr['formato'])    && is_string($bookArr['formato'])    ? $bookArr['formato']    : null,
+            isset($bookArr['tipo_media']) && is_string($bookArr['tipo_media']) ? $bookArr['tipo_media'] : null
+        );
+
+        $signLinks = [
+            '<https://schema.org/' . \App\Support\MediaLabels::schemaOrgType($tipoRes) . '>; rel="type"',
+        ];
+        if ($bibframePluginActive) {
+            $bibframeBookPath = str_replace('{id}', (string) $book_id, RouteTranslator::route('bibframe.book'));
+            array_unshift($signLinks, '<' . absoluteUrl($bibframeBookPath) . '>; rel="describedby"; type="application/ld+json"');
+        }
+        $primaryAuthor = $authors[0] ?? null;
+        if (is_array($primaryAuthor)) {
+            $viafUri = '';
+            if (!empty($primaryAuthor['viaf_uri']) && is_string($primaryAuthor['viaf_uri'])) {
+                $viafUri = $primaryAuthor['viaf_uri'];
+            } elseif (!empty($primaryAuthor['viaf_id']) && is_string($primaryAuthor['viaf_id'])) {
+                $viafUri = 'https://viaf.org/viaf/' . rawurlencode($primaryAuthor['viaf_id']);
+            }
+            if ($viafUri !== '' && filter_var($viafUri, FILTER_VALIDATE_URL) !== false
+                && preg_match('/^https?:\/\//', $viafUri)
+                && strpbrk($viafUri, "<>,\r\n") === false) {
+                $signLinks[] = '<' . $viafUri . '>; rel="author"';
+            }
+        }
+
         $response->getBody()->write($content);
-        return $response->withHeader('Content-Type', 'text/html');
+        return $response
+            ->withHeader('Content-Type', 'text/html')
+            ->withHeader('Link', implode(', ', $signLinks));
     }
 
     private function render404(Response $response): Response

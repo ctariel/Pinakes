@@ -36,11 +36,11 @@ function runScenario(name) {
 }
 
 test.describe('Branch Fix Consistency', () => {
-  test('collana rename rolls back when target already exists', () => {
+  test('collana rename merges into target when the destination already exists', () => {
     const result = runScenario('collana-rename-rollback');
     expect(result.ok, JSON.stringify(result)).toBe(true);
-    expect(result.bookCollana).toBe(result.source);
-    expect(result.sourceExists).toBe(1);
+    expect(result.bookCollana).toBe(result.target);
+    expect(result.sourceExists).toBe(0);
     expect(result.targetExists).toBe(1);
   });
 

@@ -16,6 +16,7 @@ class ApiBookScraperPlugin
     private const PLUGIN_NAME = 'api-book-scraper';
 
     private ?\mysqli $db = null;
+    /** @phpstan-ignore property.onlyWritten */
     private ?object $hookManager = null;
     private ?int $pluginId = null;
 
@@ -259,7 +260,7 @@ class ApiBookScraperPlugin
         }
 
         // Decodifica base64
-        $decoded = base64_decode($encrypted);
+        $decoded = base64_decode($encrypted, true);
         if ($decoded === false) {
             return $value;
         }
@@ -339,8 +340,10 @@ class ApiBookScraperPlugin
                 }
 
                 // Fill empty fields in existing data with API data
+                // FIX F027: restore null handling (matches comment intent "fill empty fields")
+                // Use array_key_exists so === null branch remains meaningful for PHPStan
                 foreach ($bookData as $key => $value) {
-                    if (!isset($existing[$key]) || $existing[$key] === '' || $existing[$key] === null) {
+                    if (!array_key_exists($key, $existing) || $existing[$key] === '' || $existing[$key] === null) {
                         $existing[$key] = $value;
                     }
                 }

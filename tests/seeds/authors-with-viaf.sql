@@ -1,0 +1,79 @@
+-- Seed: authors-with-viaf.sql
+-- 50 authors with VIAF IDs, selected ISNI IDs, and authority fields.
+-- Used by: viaf-authority.spec.js, viaf-reconcile.spec.js, interop-document-coverage.spec.js
+-- Confidence values match viaf-authority schema: exact, probable, candidate, rejected.
+--
+-- To load: mysql -u <user> -p <db> < tests/seeds/authors-with-viaf.sql
+
+-- FK-safe cleanup before re-seeding:
+DELETE FROM author_authority_alternates
+WHERE autore_id IN (SELECT id FROM autori WHERE nome LIKE 'SEED_VIAF_%');
+SET @autori_authority_link_exists = (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'autori_authority_link'
+);
+SET @cleanup_autori_authority_link_sql = IF(
+    @autori_authority_link_exists > 0,
+    'DELETE FROM autori_authority_link WHERE autori_id IN (SELECT id FROM autori WHERE nome LIKE ''SEED_VIAF_%'')',
+    'SELECT 1'
+);
+PREPARE cleanup_autori_authority_link_stmt FROM @cleanup_autori_authority_link_sql;
+EXECUTE cleanup_autori_authority_link_stmt;
+DEALLOCATE PREPARE cleanup_autori_authority_link_stmt;
+DELETE FROM libri_autori
+WHERE autore_id IN (SELECT id FROM autori WHERE nome LIKE 'SEED_VIAF_%');
+DELETE FROM autori WHERE nome LIKE 'SEED_VIAF_%';
+
+INSERT IGNORE INTO autori (nome, viaf_id, viaf_uri, isni_id, isni_uri, authority_source, authority_confidence) VALUES
+('SEED_VIAF_Dante Alighieri',           '97006617',  'https://viaf.org/viaf/97006617',  NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Giovanni Boccaccio',        '64002165',  'https://viaf.org/viaf/64002165',  NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Francesco Petrarca',        '39387539',  'https://viaf.org/viaf/39387539',  NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Alessandro Manzoni',        '7399869',   'https://viaf.org/viaf/7399869',   NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Giacomo Leopardi',          '46765049',  'https://viaf.org/viaf/46765049',  NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Umberto Eco',               '108299403', 'https://viaf.org/viaf/108299403', NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Italo Calvino',             '54147345',  'https://viaf.org/viaf/54147345',  NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Elsa Morante',              '34457751',  'https://viaf.org/viaf/34457751',  NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Pier Paolo Pasolini',       '54153281',  'https://viaf.org/viaf/54153281',  NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Gianni Rodari',             '108299581', 'https://viaf.org/viaf/108299581', NULL, NULL, 'viaf', 'exact'),
+('SEED_VIAF_Author_0000000000000028',   '30000001',  'https://viaf.org/viaf/30000001',  '0000000000000028', 'https://isni.org/isni/0000000000000028', 'viaf', 'exact'),
+('SEED_VIAF_Author_0000000121436346',   '30000002',  'https://viaf.org/viaf/30000002',  '0000000121436346', 'https://isni.org/isni/0000000121436346', 'viaf', 'exact'),
+('SEED_VIAF_Author_0000000000000109',   '30000003',  'https://viaf.org/viaf/30000003',  '0000000000000109', 'https://isni.org/isni/0000000000000109', 'viaf', 'exact'),
+('SEED_VIAF_Author_004',                '30000004',  'https://viaf.org/viaf/30000004',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_005',                '30000005',  'https://viaf.org/viaf/30000005',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_006',                '30000006',  'https://viaf.org/viaf/30000006',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_007',                '30000007',  'https://viaf.org/viaf/30000007',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_008',                '30000008',  'https://viaf.org/viaf/30000008',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_009',                '30000009',  'https://viaf.org/viaf/30000009',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_010',                '30000010',  'https://viaf.org/viaf/30000010',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_011',                '30000011',  'https://viaf.org/viaf/30000011',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_012',                '30000012',  'https://viaf.org/viaf/30000012',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_013',                '30000013',  'https://viaf.org/viaf/30000013',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_014',                '30000014',  'https://viaf.org/viaf/30000014',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_015',                '30000015',  'https://viaf.org/viaf/30000015',  NULL, NULL, 'viaf', 'probable'),
+('SEED_VIAF_Author_016',                '30000016',  'https://viaf.org/viaf/30000016',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_017',                '30000017',  'https://viaf.org/viaf/30000017',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_018',                '30000018',  'https://viaf.org/viaf/30000018',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_019',                '30000019',  'https://viaf.org/viaf/30000019',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_020',                '30000020',  'https://viaf.org/viaf/30000020',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_021',                '30000021',  'https://viaf.org/viaf/30000021',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_022',                '30000022',  'https://viaf.org/viaf/30000022',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_023',                '30000023',  'https://viaf.org/viaf/30000023',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_024',                '30000024',  'https://viaf.org/viaf/30000024',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_025',                '30000025',  'https://viaf.org/viaf/30000025',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_026',                '30000026',  'https://viaf.org/viaf/30000026',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_027',                '30000027',  'https://viaf.org/viaf/30000027',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_028',                '30000028',  'https://viaf.org/viaf/30000028',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_029',                '30000029',  'https://viaf.org/viaf/30000029',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_030',                '30000030',  'https://viaf.org/viaf/30000030',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_031',                '30000031',  'https://viaf.org/viaf/30000031',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_032',                '30000032',  'https://viaf.org/viaf/30000032',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_033',                '30000033',  'https://viaf.org/viaf/30000033',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_034',                '30000034',  'https://viaf.org/viaf/30000034',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_035',                '30000035',  'https://viaf.org/viaf/30000035',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_036',                '30000036',  'https://viaf.org/viaf/30000036',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_037',                '30000037',  'https://viaf.org/viaf/30000037',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_038',                '30000038',  'https://viaf.org/viaf/30000038',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_039',                '30000039',  'https://viaf.org/viaf/30000039',  NULL, NULL, 'viaf', 'candidate'),
+('SEED_VIAF_Author_040',                '30000040',  'https://viaf.org/viaf/30000040',  NULL, NULL, 'viaf', 'candidate');

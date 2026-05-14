@@ -22,6 +22,18 @@ class PluginManager
     private ?string $cachedEncryptionKey = null;
     private bool $encryptionKeyResolved = false;
 
+    /**
+     * Per-process cache for {@see isActive()} lookups.
+     *
+     * Static (not per-instance) so that every code path that asks the same
+     * question — controllers, views, plugin bootstrap, hooks — pays the DB
+     * round-trip at most once per request lifetime per plugin name. Keyed
+     * by plugin name; value is the boolean is_active result.
+     *
+     * @var array<string, bool>
+     */
+    private static array $isActiveCache = [];
+
     public function __construct(mysqli $db, HookManager $hookManager)
     {
         $this->db = $db;
@@ -462,6 +474,68 @@ class PluginManager
         return $plugin ?: null;
     }
 
+    /**
+     * Cheap "is this plugin active?" check with a per-process static cache.
+     *
+     * Hot paths (book detail, frontend layout) used to issue an uncached
+     * `SELECT 1 FROM plugins WHERE name = ? AND is_active = 1` on every
+     * render — a guaranteed extra round-trip per request, including for
+     * anonymous catalog crawlers. This helper does the same query once per
+     * plugin name per PHP request and caches the boolean result.
+     *
+     * The cache is static for the lifetime of the process: an activation
+     * or deactivation done in the same request will not be reflected here
+     * after the first lookup. That is acceptable because plugin lifecycle
+     * actions happen on admin endpoints (separate request) and the cache
+     * dies with the request anyway.
+     *
+     * @param string $name Plugin name (e.g. 'bibframe-linked-data', 'archives')
+     * @return bool        true if the plugin row exists and is_active=1
+     */
+    public function isActive(string $name): bool
+    {
+        if (isset(self::$isActiveCache[$name])) {
+            return self::$isActiveCache[$name];
+        }
+
+        $active = false;
+        $stmt = $this->db->prepare("SELECT is_active FROM plugins WHERE name = ? LIMIT 1");
+        if ($stmt !== false) {
+            $stmt->bind_param('s', $name);
+            if ($stmt->execute()) {
+                $result = $stmt->get_result();
+                if ($result instanceof \mysqli_result) {
+                    $row = $result->fetch_assoc();
+                    if ($row !== null) {
+                        $active = ((int) $row['is_active']) === 1;
+                    }
+                    $result->free();
+                }
+            }
+            $stmt->close();
+        } else {
+            SecureLogger::warning('[PluginManager] isActive() prepare failed', [
+                'plugin'   => $name,
+                'db_error' => $this->db->error,
+            ]);
+        }
+
+        self::$isActiveCache[$name] = $active;
+        return $active;
+    }
+
+    /**
+     * Reset the per-process isActive() cache.
+     *
+     * Lifecycle code (activate / deactivate / uninstall) calls this so a
+     * later isActive() check in the same request returns fresh data.
+     * Tests can also use it between cases.
+     */
+    public static function clearIsActiveCache(): void
+    {
+        self::$isActiveCache = [];
+    }
+
     public function getPluginInstance(int $pluginId): ?object
     {
         $plugin = $this->getPlugin($pluginId);
@@ -828,6 +902,10 @@ class PluginManager
             return ['success' => false, 'message' => __('Errore durante l\'attivazione del plugin.')];
         }
 
+        // Drop the per-process is_active cache so a follow-up isActive()
+        // call in the same request sees the new state.
+        self::clearIsActiveCache();
+
         return ['success' => true, 'message' => __('Plugin attivato con successo.')];
     }
 
@@ -870,6 +948,10 @@ class PluginManager
         if (!$result) {
             return ['success' => false, 'message' => __('Errore durante la disattivazione del plugin.')];
         }
+
+        // Drop the per-process is_active cache so a follow-up isActive()
+        // call in the same request sees the new state.
+        self::clearIsActiveCache();
 
         return ['success' => true, 'message' => __('Plugin disattivato con successo.')];
     }
@@ -925,6 +1007,10 @@ class PluginManager
         if (is_dir($pluginPath)) {
             $this->deleteDirectory($pluginPath);
         }
+
+        // Drop the per-process is_active cache so a follow-up isActive()
+        // call in the same request sees the row is gone.
+        self::clearIsActiveCache();
 
         return ['success' => true, 'message' => __('Plugin disinstallato con successo.')];
     }

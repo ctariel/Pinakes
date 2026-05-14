@@ -97,7 +97,7 @@ class QueryCache
                 $staleLock = true;
             }
 
-            while (!$lockAcquired && !$staleLock) {
+            while (!$staleLock) {
                 $lockAcquired = flock($lockHandle, LOCK_EX | LOCK_NB);
                 if ($lockAcquired) {
                     break;
@@ -108,7 +108,7 @@ class QueryCache
                 $lockMtime = @filemtime($lockFile);
                 if ($lockMtime !== false && (time() - $lockMtime) > $staleThreshold) {
                     $staleLock = true;
-                    break;
+                    continue; // re-evaluate while(!$staleLock) → exits loop
                 }
 
                 if ((microtime(true) - $start) >= $maxWaitSeconds) {
@@ -122,6 +122,39 @@ class QueryCache
             $cached = self::get($key);
             if ($cached !== null) {
                 return $cached;
+            }
+
+            // FIX F008: When the wait loop timed out without acquiring the lock and
+            // without detecting a stale lock, we previously fell through to $callback()
+            // + self::set() WITHOUT holding any lock. That defeats the stampede
+            // protection: every concurrent caller that timed out would run the
+            // (expensive) callback in parallel. Attempt one final LOCK_EX acquisition
+            // (with a short bounded retry) so at most one caller proceeds unprotected.
+            if ($timedOut && !$lockAcquired && !$staleLock) {
+                // FIX F008: short blocking-ish retry — try a few non-blocking attempts
+                // separated by usleep so we don't risk holding the request indefinitely.
+                $finalAttempts = 5;
+                for ($i = 0; $i < $finalAttempts; $i++) {
+                    if (flock($lockHandle, LOCK_EX | LOCK_NB)) {
+                        $lockAcquired = true;
+                        break;
+                    }
+                    usleep(100000); // 100ms between attempts → up to ~500ms extra wait
+                }
+
+                // FIX F008: observability — if we still couldn't acquire the lock we
+                // proceed unprotected (graceful degradation, preserves existing
+                // behavior), but at least surface it via SecureLogger so operators
+                // know stampede protection was bypassed.
+                if (!$lockAcquired) {
+                    SecureLogger::warning(
+                        'QueryCache: proceeding without mutex after lock timeout (stampede protection bypassed)',
+                        [
+                            'key_prefix' => substr($key, 0, 80),
+                            'wait_seconds' => round(microtime(true) - $start, 3),
+                        ]
+                    );
+                }
             }
 
             // Execute callback to get fresh value

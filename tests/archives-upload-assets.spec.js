@@ -45,10 +45,11 @@ test.skip(
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(PROJECT_ROOT, 'public');
+const FIXTURES_DIR = path.join(__dirname, 'fixtures');
 
-const TEST_COVER = '/tmp/archive-test-cover.jpg';
-const TEST_PDF = '/tmp/archive-test.pdf';
-const TEST_AUDIO = '/tmp/archive-test-audio.mp3';
+const TEST_COVER = path.join(FIXTURES_DIR, 'archive-test-cover.jpg');
+const TEST_PDF   = path.join(FIXTURES_DIR, 'archive-test.pdf');
+const TEST_AUDIO = path.join(FIXTURES_DIR, 'archive-test-audio.mp3');
 
 test.describe.serial('Archives — upload cover / PDF / audio end-to-end', () => {
     /** @type {import('@playwright/test').BrowserContext} */
@@ -64,9 +65,7 @@ test.describe.serial('Archives — upload cover / PDF / audio end-to-end', () =>
     const ids = { pdf: 0, audio: 0, coverOnly: 0 };
 
     test.beforeAll(async ({ browser }) => {
-        // Fixture-file sanity check — a dev that skipped the
-        // ffmpeg/pdf generation step will otherwise see a confusing
-        // 'input file not found' from Playwright's setInputFiles.
+        // Sanity check: committed fixtures must be present in tests/fixtures/
         for (const fp of [TEST_COVER, TEST_PDF, TEST_AUDIO]) {
             expect(fs.existsSync(fp), `fixture missing: ${fp}`).toBe(true);
         }
@@ -128,8 +127,10 @@ test.describe.serial('Archives — upload cover / PDF / audio end-to-end', () =>
     test('2. Upload document (PDF) — row #1', async () => {
         await submitUpload(ids.pdf, 'form[action*="/upload-document"]', 'document', TEST_PDF);
         const row = dbQuery(
-            `SELECT CONCAT_WS('|', document_path, document_mime, document_filename)
-               FROM archival_units WHERE id = ${ids.pdf}`
+            `SELECT CONCAT_WS('|', file_path, file_mime, original_filename)
+               FROM archival_unit_files
+              WHERE unit_id = ${ids.pdf}
+              ORDER BY id DESC LIMIT 1`
         );
         const [docPath, mime, filename] = row.split('|');
         expect(docPath).toMatch(/^\/uploads\/archives\/documents\/\d+-[a-f0-9]{8}\.pdf$/);
@@ -147,17 +148,19 @@ test.describe.serial('Archives — upload cover / PDF / audio end-to-end', () =>
         expect(row).toMatch(/^\/uploads\/archives\/covers\/\d+-[a-f0-9]{8}\.jpg$/);
     });
 
-    test('4. Upload audio (MP3) — row #2, should trigger player in frontend', async () => {
+    test('4. Upload audio (WAV) — row #2, should trigger player in frontend', async () => {
         await submitUpload(ids.audio, 'form[action*="/upload-document"]', 'document', TEST_AUDIO);
         const row = dbQuery(
-            `SELECT CONCAT_WS('|', document_path, document_mime, document_filename)
-               FROM archival_units WHERE id = ${ids.audio}`
+            `SELECT CONCAT_WS('|', file_path, file_mime, original_filename)
+               FROM archival_unit_files
+              WHERE unit_id = ${ids.audio}
+              ORDER BY id DESC LIMIT 1`
         );
         const [docPath, mime, filename] = row.split('|');
-        expect(docPath).toMatch(/^\/uploads\/archives\/documents\/\d+-[a-f0-9]{8}\.mp3$/);
-        expect(mime).toBe('audio/mpeg');
-        expect(filename).toBe('archive-test-audio.mp3');
-        expect(fs.existsSync(path.join(PUBLIC_DIR, docPath)), 'MP3 file on disk').toBe(true);
+        expect(docPath).toMatch(/^\/uploads\/archives\/documents\/\d+-[a-f0-9]{8}\.wav$/);
+        expect(['audio/wav', 'audio/x-wav']).toContain(mime);
+        expect(filename).toBe('archive-test-audio.wav');
+        expect(fs.existsSync(path.join(PUBLIC_DIR, docPath)), 'audio file on disk').toBe(true);
     });
 
     test('5. Upload cover only — row #3', async () => {
@@ -172,15 +175,15 @@ test.describe.serial('Archives — upload cover / PDF / audio end-to-end', () =>
         // page.request.get follows by default.
         const resp = await page.request.get(`${BASE}/archivio/${ids.pdf}`);
         const body = await resp.text();
-        expect(body).toContain('Scarica documento');
         expect(body).toContain('archive-test.pdf');
+        expect(body).toMatch(/\/uploads\/archives\/documents\/\d+-[a-f0-9]{8}\.pdf/);
     });
 
     test('7. Public frontend: audio row renders <audio> + green-audio-player', async () => {
         const resp = await page.request.get(`${BASE}/archivio/${ids.audio}`);
         const body = await resp.text();
         expect(body).toContain('green-audio-player');
-        expect(body).toMatch(/<audio[^>]+\.mp3/);
+        expect(body).toMatch(/<audio[^>]+\.wav/);
     });
 
     test('8. Public frontend: cover images are served by nginx', async () => {
@@ -199,7 +202,7 @@ test.describe.serial('Archives — upload cover / PDF / audio end-to-end', () =>
         // claims image/jpeg but the real MIME (sniffed via libmagic) is
         // text/x-php or text/html. Server must reject + not touch the
         // DB / filesystem for this row.
-        const fakeJpgPath = '/tmp/archive-test-evil.jpg';
+        const fakeJpgPath = path.join(FIXTURES_DIR, 'archive-test-evil.jpg');
         fs.writeFileSync(fakeJpgPath, '<?php phpinfo(); ?>\n');
         try {
             const before = dbQuery(
@@ -228,7 +231,7 @@ test.describe.serial('Archives — upload cover / PDF / audio end-to-end', () =>
     });
 
     test('10. NEGATIVE: uploading an .exe as document is rejected', async () => {
-        const fakeExePath = '/tmp/archive-test-fake.exe';
+        const fakeExePath = path.join(FIXTURES_DIR, 'archive-test-fake.exe');
         // Fake PE header — finfo detects it as application/x-dosexec,
         // which is NOT in the document mime whitelist.
         fs.writeFileSync(fakeExePath, 'MZ\x90\x00\x03\x00\x00\x00\x04\x00');

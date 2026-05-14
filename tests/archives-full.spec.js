@@ -158,7 +158,7 @@ test.describe.serial('Archives plugin — full regression (#103 phases 1–6)', 
         // DB state, not a pending one.
         await page.goto(`${BASE}/admin/plugins`);
         await page.waitForLoadState('domcontentloaded');
-        const activateBtn = page.locator(`button[onclick^="activatePlugin("]`, { hasText: 'Attiva' }).first();
+        const activateBtn = page.locator(`button[onclick^="activatePlugin("]`).first();
         if (await activateBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
             await activateBtn.click();
             await page.locator('.swal2-confirm').first().click();
@@ -406,7 +406,7 @@ test.describe.serial('Archives plugin — full regression (#103 phases 1–6)', 
         const fondsId = dbQuery(`SELECT id FROM archival_units WHERE reference_code = '${FONDS_REF}' AND deleted_at IS NULL`);
         const authId = dbQuery(`SELECT id FROM authority_records WHERE authorised_form = '${AUTH_NAME_PERSON}' AND deleted_at IS NULL`);
         await page.goto(`${BASE}/admin/archives/${fondsId}`);
-        await page.click('button:has-text("scollega"), button:has-text("unlink")');
+        await page.locator(`form[action$="/admin/archives/${fondsId}/authorities/${authId}/detach"] button`).click();
         await page.locator('.swal2-confirm').click();
         await page.waitForURL(new RegExp(`/admin/archives/${fondsId}$`), { timeout: 10000 });
         const count = dbQuery(

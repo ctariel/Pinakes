@@ -269,7 +269,7 @@ test.describe.serial('Series groups and cycles', () => {
   test('06. series detail links other spin-offs in the same group', async () => {
     await page.goto(`${BASE}/admin/collane/dettaglio?nome=${encodeURIComponent(MAIN_SERIES)}`);
     await expect(page.locator('body')).toContainText('Altre serie nello stesso gruppo');
-    await expect(page.locator(`a[href*="${encodeURIComponent(SPINOFF_SERIES)}"]`)).toContainText(SPINOFF_SERIES);
+    await expect(page.locator('a', { hasText: SPINOFF_SERIES })).toBeVisible();
   });
 
   test('07. save cycle metadata from the series admin page', async () => {

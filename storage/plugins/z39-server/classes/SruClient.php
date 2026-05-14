@@ -59,9 +59,7 @@ class SruClient
             }
 
             try {
-                $result = $this->queryServerWithRetry($server, 'isbn', '"'.$isbn.'"');
-                \App\Support\SecureLogger::debug('SRUClient : queryServerWithRetry result', ['result' => $result]);
-
+                $result = $this->queryServerWithRetry($server, 'isbn', $isbn);
                 if ($result) {
                     return $result;
                 }
@@ -82,13 +80,21 @@ class SruClient
      */
     private function queryServerWithRetry(array $server, string $index, string $term): ?array
     {
+        // Elapsed-based rate limiter: max 1 request/second per server.
+        // FIX F088: process-shared if APCu/file-lock available; per-process otherwise (degraded).
+        // Without cross-process coordination, multi-worker setups (PHP-FPM, mod_php with multiple
+        // workers, CLI parallelism) would issue N×1 req/s instead of the documented 1 req/s.
+        static $lastRequest = [];
+        $serverKey = $server['url'] ?? 'unknown';
+        $this->enforceRateLimit($serverKey, $lastRequest);
+
         $lastException = null;
         $attempts = 0;
 
         while ($attempts <= $this->maxRetries) {
             try {
                 return $this->queryServer($server, $index, $term);
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $lastException = $e;
                 $attempts++;
 
@@ -112,6 +118,81 @@ class SruClient
     }
 
     /**
+     * Enforce a max-1-request-per-second rate limit per server.
+     *
+     * Strategy (FIX F088):
+     *  1. APCu (when available): use apcu_cas / apcu_store with a TTL key so all workers on the
+     *     box see the same "last request" timestamp.
+     *  2. File-lock fallback: a tiny per-server lock file in sys_get_temp_dir() is opened with
+     *     flock(LOCK_EX), the previous timestamp is read, we sleep if needed, then write the
+     *     fresh timestamp before releasing the lock.
+     *  3. Degraded fallback: in-process static array (original behavior, per-process only).
+     *
+     * @param string                $serverKey   stable per-server identifier (URL)
+     * @param array<string, float>  $lastRequest in-process fallback state, passed by reference
+     */
+    private function enforceRateLimit(string $serverKey, array &$lastRequest): void
+    {
+        $minIntervalSeconds = 1.0;
+        $now = microtime(true);
+
+        // Tier 1: APCu shared across workers on the same machine
+        if (function_exists('apcu_fetch') && function_exists('apcu_store')) {
+            $apcuKey = 'sru_rate_' . md5($serverKey);
+            $success = false;
+            $previous = apcu_fetch($apcuKey, $success);
+            if ($success && is_numeric($previous)) {
+                $elapsed = $now - (float)$previous;
+                if ($elapsed < $minIntervalSeconds) {
+                    usleep((int)(($minIntervalSeconds - $elapsed) * 1_000_000));
+                }
+            }
+            // TTL of 2s is enough to enforce a 1s window without leaking entries
+            apcu_store($apcuKey, microtime(true), 2);
+            return;
+        }
+
+        // Tier 2: file lock shared across workers on the same machine
+        $lockDir = sys_get_temp_dir();
+        if ($lockDir !== '' && is_writable($lockDir)) {
+            $lockPath = $lockDir . DIRECTORY_SEPARATOR . 'pinakes_sru_rate_' . md5($serverKey) . '.lock';
+            $fh = @fopen($lockPath, 'c+');
+            if ($fh !== false) {
+                try {
+                    if (flock($fh, LOCK_EX)) {
+                        rewind($fh);
+                        $contents = stream_get_contents($fh);
+                        $previous = is_string($contents) && is_numeric(trim($contents)) ? (float)trim($contents) : 0.0;
+                        $elapsed = microtime(true) - $previous;
+                        if ($previous > 0 && $elapsed < $minIntervalSeconds) {
+                            usleep((int)(($minIntervalSeconds - $elapsed) * 1_000_000));
+                        }
+                        ftruncate($fh, 0);
+                        rewind($fh);
+                        fwrite($fh, (string)microtime(true));
+                        fflush($fh);
+                        flock($fh, LOCK_UN);
+                        fclose($fh);
+                        return;
+                    }
+                    fclose($fh);
+                } catch (\Throwable $e) {
+                    // Swallow and fall through to in-process limiter; rate limiting is best-effort.
+                    if (is_resource($fh)) {
+                        fclose($fh);
+                    }
+                }
+            }
+        }
+
+        // Tier 3 (degraded): in-process only
+        if (isset($lastRequest[$serverKey]) && ($now - $lastRequest[$serverKey]) < $minIntervalSeconds) {
+            usleep((int)(($minIntervalSeconds - ($now - $lastRequest[$serverKey])) * 1_000_000));
+        }
+        $lastRequest[$serverKey] = microtime(true);
+    }
+
+    /**
      * Execute a query against a specific server
      */
     private function queryServer(array $server, string $index, string $term): ?array
@@ -121,6 +202,11 @@ class SruClient
         // Validate URL
         if (!filter_var($url, FILTER_VALIDATE_URL)) {
             throw new \Exception("Invalid server URL: $url");
+        }
+
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            throw new \Exception("Unsupported URL scheme '$scheme': only HTTP/HTTPS allowed");
         }
 
         $version = $server['version'] ?? '1.1';
@@ -135,20 +221,23 @@ class SruClient
         }
 
         // Build query parameters
+        // quote_search_terms: some servers (e.g. BNF) require the term wrapped in CQL quotes.
+        // Backslash-escape embedded " per CQL spec (§ 4 of the LOC CQL standard).
+        $quotedTerm = !empty($server['quote_search_terms'])
+            ? '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $term) . '"'
+            : $term;
         $params = [
             'operation' => 'searchRetrieve',
             'version' => $version,
-            'query' => $cqlIndex . '=' . $term,
+            'query' => $cqlIndex . '=' . $quotedTerm,
             'recordSchema' => $recordSchema,
             'maximumRecords' => 1
         ];
 
         $finalUrl = $url . (strpos($url, '?') === false ? '?' : '&') . http_build_query($params);
-        \App\Support\SecureLogger::debug('SRUClient : finalURL', ['FinalURL' => $finalUrl]);
 
         // Fetch content with proper error handling
         $response = $this->fetchUrl($finalUrl);
-        \App\Support\SecureLogger::debug('SRUClient : response', ['response' => $response]);
 
         if ($response === null) {
             return null;
@@ -156,37 +245,38 @@ class SruClient
 
         // Parse XML
         $dom = new DOMDocument();
-        libxml_use_internal_errors(true);
-        if (!$dom->loadXML($response)) {
+        $prevLibxmlErrors = libxml_use_internal_errors(true);
+        if (!$dom->loadXML($response, LIBXML_NONET)) {
             $errors = libxml_get_errors();
             libxml_clear_errors();
-            throw new \Exception("Invalid XML response from $url: " . ($errors[0]->message ?? 'Parse error'));
+            libxml_use_internal_errors($prevLibxmlErrors);
+            throw new \RuntimeException("Invalid XML response from $url: " . ($errors[0]->message ?? 'Parse error'));
         }
+        libxml_clear_errors();
+        libxml_use_internal_errors($prevLibxmlErrors);
 
         $xpath = new DOMXPath($dom);
 
         // Register namespaces
+        $xpath->registerNamespace('sru', 'http://www.loc.gov/zing/srw/');
         $xpath->registerNamespace('marc', 'http://www.loc.gov/MARC21/slim');
         $xpath->registerNamespace('dc', 'http://purl.org/dc/elements/1.1/');
         $xpath->registerNamespace('oai_dc', 'http://www.openarchives.org/OAI/2.0/oai_dc/');
-        $xpath->registerNamespace('srw', 'http://www.loc.gov/zing/srw/');
         $xpath->registerNamespace('mxc', 'info:lc/xmlns/marcxchange-v2');
-        $xpath->registerNamespace('ixm', 'http://catalogue.bnf.fr/namespaces/InterXMarc');
- 
-        // Check for records
-        // TODO: check between SRU or SRW
-        $numberOfRecords = $xpath->query('//srw:numberOfRecords');
-        \App\Support\SecureLogger::debug('SRUClient : records', ['numberOfRecords' => $numberOfRecords->item(0)->nodeValue]);
 
+        // Check for records — try registered namespace then local-name() fallback
+        $numberOfRecords = $xpath->query('//sru:numberOfRecords');
+        if ($numberOfRecords->length === 0) {
+            $numberOfRecords = $xpath->query('//*[local-name()="numberOfRecords"]');
+        }
         if ($numberOfRecords->length > 0 && (int) $numberOfRecords->item(0)->nodeValue === 0) {
             return null;
         }
 
-        \App\Support\SecureLogger::debug('SRUClient : recordSchema', ['recordSchema' => $recordSchema]);
         // Extract record data based on schema
         return match ($recordSchema) {
             'marcxml' => $this->parseMarcXml($xpath),
-            'unimarcxchange' => $this->parseMarcxchangeXml($xpath),
+            'unimarcxchange', 'marcxchange', 'unimarc' => $this->parseMarcxchangeXml($xpath),
             'dc', 'oai_dc' => $this->parseDublinCore($xpath),
             default => $this->parseMarcXml($xpath),
         };
@@ -202,6 +292,8 @@ class SruClient
             $ch = curl_init();
             curl_setopt_array($ch, [
                 CURLOPT_URL => $url,
+                CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+                CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT => $this->timeout,
                 CURLOPT_CONNECTTIMEOUT => 5,
@@ -218,6 +310,10 @@ class SruClient
             curl_close($ch);
 
             if ($response === false || !empty($error)) {
+                \App\Support\SecureLogger::error('[SruClient] cURL error', [
+                    'url'   => $url,
+                    'error' => $error,
+                ]);
                 throw new \Exception("Connection failed: $error");
             }
 
@@ -430,6 +526,7 @@ class SruClient
                 if ($sub->nodeType !== XML_ELEMENT_NODE) {
                     continue;
                 }
+                /** @var \DOMElement $sub */
                 $code = $sub->getAttribute('code');
                 if ($code === 'a') {
                     $nameA = trim($sub->nodeValue);
@@ -483,227 +580,6 @@ class SruClient
     }
 
     /**
-     * Parse MARCXCHANGEXML response - BNF only ! (Bibliotheque Nationale de France)
-     */
-    private function parseMarcxchangeXml(DOMXPath $xpath): ?array
-    {
-
-        // Find the first record
-        $record = $xpath->query('//mxc:record');
-
-
-        if (!$record) {
-            $record = $xpath->query('//record')->item(0);
-        }
-
-
-        if (!$record) {
-            return null;
-        }
-
-        $book = [
-            'title' => '',
-            'subtitle' => '',
-            'description' => '',
-            'publisher' => '',
-            'authors' => [],
-            'ean' => '',
-            'pubDate' => '',
-            'price' => '',
-            'format' => '',
-            'dimensions' => '',
-            'series' => '',
-            'numero_serie' => '',
-            'pages' => '',
-            'author_bio' => '',
-            'isbn13' => '',
-            'isbn10' => '',
-            'year' => '',
-            'language' => '',
-            'keywords' => '',
-            'translator' => '',
-            'illustrator' => '',
-            'classificazione_dewey' => '',
-            'source' => 'Z39.50/SRU'
-        ];
-
-        // Helper to get subfield
-        $getSubfield = function ($tag, $code) use ($xpath, $record) {
-#            $nodes = $xpath->query(".//mxc:datafield[@tag='$tag']/mxc:subfield[@code='$code']", $record);
-            $nodes = $xpath->query(".//mxc:datafield[@tag='$tag']/mxc:subfield[@code='$code']");
-            if ($nodes->length === 0) {
-#                $nodes = $xpath->query(".//datafield[@tag='$tag']/subfield[@code='$code']", $record);
-                $nodes = $xpath->query(".//datafield[@tag='$tag']/subfield[@code='$code']");
-            }
-            return $nodes->length > 0 ? trim($nodes->item(0)->nodeValue) : null;
-        };
-
-        // Title (245 $a $b)
-        $book['title'] = $getSubfield('200', 'a') ?? '';
-        $tome = $getSubfield('200', 'h') ?? '';
-        if ($tome !== '') {
-            $book['title'] .= __(' - Tome ') . $tome;
-        }
-
-        $book['subtitle'] = $getSubfield('200', 'e') ?? '';
-
-        // Clean title (remove trailing slash/punctuation)
-        $book['title'] = trim(preg_replace('/[\/\s:;]+$/', '', $book['title']));
-        $book['subtitle'] = trim(preg_replace('/[\/\s:;]+$/', '', $book['subtitle']));
-
-        // Remove MARC-8 control characters using Unicode code points with /u flag
-        // U+0088 = NSB (Non-Sorting Begin), U+0089 = NSE (Non-Sorting End)
-        // U+0098 = Joiner, U+009C = Superscript markers
-        // Remove all C1 control characters (U+0080-U+009F)
-        $book['title'] = preg_replace('/[\x{0080}-\x{009F}]/u', '', $book['title']);
-        $book['subtitle'] = preg_replace('/[\x{0080}-\x{009F}]/u', '', $book['subtitle']);
-        // Normalize whitespace (collapse multiple spaces into one)
-        $book['title'] = trim(preg_replace('/\s+/u', ' ', $book['title']));
-        $book['subtitle'] = trim(preg_replace('/\s+/u', ' ', $book['subtitle']));
-
-
-        foreach (['700', '701', '702'] as $tag) {
-            $nodes = $xpath->query("//mxc:datafield[@tag=\"$tag\"]");
-            if ($nodes === false) continue;
-        
-            foreach ($nodes as $node) {
-                $nom    = trim($xpath->query('mxc:subfield[@code="a"]', $node)->item(0)?->nodeValue ?? '');
-                $prenom = trim($xpath->query('mxc:subfield[@code="b"]', $node)->item(0)?->nodeValue ?? '');
-                $role   = trim($xpath->query('mxc:subfield[@code="4"]', $node)->item(0)?->nodeValue ?? '');
-        
-                $fullName = trim("$prenom $nom");
-
-                if ($fullName !== '') {
-                    if($role == "070" ) {
-                        $book['authors'][] = trim(preg_replace('/,$/', '', $fullName));
-                    }
-                    if($role == "440" ) {
-                        $book['illustrator'] = trim(preg_replace('/,$/', '', $fullName));
-                    }
-                }
-            }
-        }
-
-        \App\Support\SecureLogger::debug('SRUClient : book other author', ['book' => $book]);
-
-        // EAN (073 $a)
-        $ean = $getSubfield('073', 'a') ?? '';
-        if ($ean) {
-            $book['ean'] = trim(preg_replace('/[,;]+$/', '', $ean));
-        }
-
-        $publisher = $getSubfield('214', 'c') ?? '';
-        if ($publisher) {
-            $book['publisher'] = trim(preg_replace('/[,;]+$/', '', $publisher));
-        }
-
-        \App\Support\SecureLogger::debug('SRUClient : book publisher', ['book' => $book]);
-
-        $year = $getSubfield('214', 'd') ?? '';
-        if ($year) {
-            if (preg_match('/\d{4}/', $year, $matches)) {
-                $book['year'] = $matches[0];
-                $book['pubDate'] = $matches[0] . '-01-01';
-            }
-        }
-
-        \App\Support\SecureLogger::debug('SRUClient : book year', ['book' => $book]);
-
-
-        // price (010 $d)
-        $price = $getSubfield('010', 'd') ?? '';
-        if ($price) {
-            $book['price'] = trim(preg_replace('/[,;]+$/', '', $price));
-        }
-
-        // format
-        $format = $getSubfield('215', 'a') ?? '';
-        if ($format) {
-            $book['format'] = trim(preg_replace('/[,;]+$/', '', $format));
-        }
-
-        // dimensions
-        $dimensions = $getSubfield('215', 'd') ?? '';
-        if ($dimensions) {
-            $book['dimensions'] = trim(preg_replace('/[,;]+$/', '', $dimensions));
-        }
-
-        // Series 
-        $series = $getSubfield('461', 't') ?? '';
-        if ($series) {
-            $book['series'] = trim(preg_replace('/[,;]+$/', '', $series));
-        }
-
-        // Series 
-        $numeroSerie = $getSubfield('461', 'v') ?? '';
-        if ($numeroSerie) {
-            $book['numero_serie'] = trim(preg_replace('/[,;]+$/', '', $numeroSerie));
-        }
-
-
-
-        $isbn = $getSubfield('010', 'a') ?? '';
-//        $isbn = preg_replace('/\D+/i', '$1', $isbn);
-//        if (strlen($isbn) === 13 && empty($book['isbn13'])) {
-        if (strlen($isbn) === 17 && empty($book['isbn13'])) {
-            $book['isbn13'] = $isbn;
-        } elseif (strlen($isbn) === 10 && empty($book['isbn10'])) {
-            $book['isbn10'] = $isbn;
-        }
-       
-        \App\Support\SecureLogger::debug('SRUClient : book isbn', ['book' => $book]);
-
-        // Pages (300 $a)
-        $pages = $getSubfield('215', 'a');
-        if ($pages) {
-            $book['pages'] = $pages;
-        }
-        \App\Support\SecureLogger::debug('SRUClient : book pages ', ['book' => $book]);
-        
-   
-        $lang = $getSubfield('101', 'a');
-        if ($lang) {
-            $book['language'] = $this->marcLanguageToName(strtolower(substr($lang, 0, 3)));
-        }
-
-        \App\Support\SecureLogger::debug('SRUClient : book language ', ['book' => $book]);
-
-        $description = $getSubfield('330', 'a');
-        if ($description) {
-            $book['description'] = $description;
-        }
-
-        \App\Support\SecureLogger::debug('SRUClient : book description ', ['book' => $book]);
-
-        // Dewey Classification (082 $a)
-        // MARC field 082 contains Dewey Decimal Classification number
-        $dewey = $getSubfield('676', 'a');
-        if ($dewey) {
-            // Clean Dewey code: extract just the numeric code (e.g., "823.912" from "823.912 20")
-            // Note: No ^ anchor - some MARC 082 fields have content before the Dewey code
-            $dewey = trim($dewey);
-            if (preg_match('/(\d{3}(?:\.\d+)?)/', $dewey, $matches)) {
-                $book['classificazione_dewey'] = $matches[1];
-            }
-        }
-
-        \App\Support\SecureLogger::debug('SRUClient : book dewey ', ['book' => $book]);
-
-        // Sanitize publisher and description (populated above from MARC fields)
-        foreach (['publisher', 'description'] as $field) {
-            $book[$field] = preg_replace('/[\x{0080}-\x{009F}]/u', '', $book[$field]);
-            $book[$field] = trim(preg_replace('/\s+/u', ' ', $book[$field]));
-        }
-
-        // Add 'author' field as string for compatibility
-        if (!empty($book['authors'])) {
-            $book['author'] = implode(', ', $book['authors']);
-        }
-        \App\Support\SecureLogger::error('SRUClient : final book !!', ['book' => $book]);
-
-        return $book;
-    }
-    /**
      * Convert MARC 3-letter language code (ISO 639-2/B) to human-readable name
      */
     private function marcLanguageToName(string $code): string
@@ -745,6 +621,204 @@ class SruClient
         ];
 
         return $map[$code] ?? strtoupper($code);
+    }
+
+    /**
+     * Parse MARCXchange/UNIMARC response (used by BNF and other French libraries)
+     *
+     * UNIMARC field mapping (differs completely from MARC21):
+     *   200 $a = title, $e = subtitle, $f = statement of responsibility
+     *   214 $c = publisher, $d = year  (or legacy 210 $c/$d)
+     *   700 $a/$b = first author (Nom/Prénom), 701 = additional, 702 = other
+     *   010 $a = ISBN, 073 $a = EAN-13
+     *   215 $a = extent/pages
+     *   461 $t = series title, $v = volume number; 225 $a/$v = alternate series statement
+     *   676 $a = Dewey classification
+     *   101 $a = language code (ISO 639-2/B)
+     *   330 $a = abstract/description
+     *   600-608 $a = subject headings
+     */
+    private function parseMarcxchangeXml(DOMXPath $xpath): ?array
+    {
+        // FIX F091: try the MARCXchange namespace first, then fall back to records nested
+        // INSIDE <recordData> so we don't accidentally pick up the outer SRU <record> envelope
+        // (SRU response wraps each bibliographic record in <sru:record><sru:recordData>...).
+        $record = $xpath->query('//mxc:record')->item(0);
+        if (!$record) {
+            $record = $xpath->query("//*[local-name()='recordData']//*[local-name()='record']")->item(0);
+        }
+        if (!$record) {
+            return null;
+        }
+
+        $book = [
+            'title' => '',
+            'subtitle' => '',
+            'authors' => [],
+            'publisher' => '',
+            'pubDate' => '',
+            'year' => '',
+            'isbn13' => '',
+            'isbn10' => '',
+            'language' => '',
+            'pages' => '',
+            'description' => '',
+            'classificazione_dewey' => '',
+            'source' => 'Z39.50/SRU (BNF/UNIMARC)'
+        ];
+
+        // Helper: get first subfield value by UNIMARC tag and subfield code
+        $getSub = function (string $tag, string $code) use ($xpath, $record): ?string {
+            $nodes = $xpath->query(".//*[local-name()='datafield'][@tag='$tag']/*[local-name()='subfield'][@code='$code']", $record);
+            return $nodes->length > 0 ? trim($nodes->item(0)->nodeValue) : null;
+        };
+
+        // Helper: get all subfield values for a given tag+code
+        $getAllSub = function (string $tag, string $code) use ($xpath, $record): array {
+            $nodes = $xpath->query(".//*[local-name()='datafield'][@tag='$tag']/*[local-name()='subfield'][@code='$code']", $record);
+            $values = [];
+            foreach ($nodes as $node) {
+                $v = trim($node->nodeValue);
+                if ($v !== '') {
+                    $values[] = $v;
+                }
+            }
+            return $values;
+        };
+
+        // Clean MARC-8 control characters and excess whitespace
+        $clean = static function (?string $s): string {
+            if ($s === null) {
+                return '';
+            }
+            $s = (string) preg_replace('/[\x{0080}-\x{009F}]/u', '', $s);
+            return trim((string) preg_replace('/\s+/u', ' ', $s));
+        };
+
+        // Title (200 $a) and subtitle (200 $e)
+        $book['title'] = $clean($getSub('200', 'a'));
+        $book['subtitle'] = $clean($getSub('200', 'e'));
+
+        // Remove trailing ISBD punctuation
+        $book['title'] = rtrim($book['title'], ' /:;=');
+        $book['subtitle'] = rtrim($book['subtitle'], ' /:;=');
+
+        // Authors: UNIMARC 700 (first author), 701 (other authors), 702 (contributor)
+        // Subfields: $a = surname, $b = forename — combine as "Surname, Forename"
+        foreach (['700', '701', '702'] as $tag) {
+            $nameNodes = $xpath->query(".//*[local-name()='datafield'][@tag='$tag']", $record);
+            foreach ($nameNodes as $nameNode) {
+                $surname = '';
+                $forename = '';
+                foreach ($nameNode->childNodes as $sub) {
+                    if ($sub->nodeType !== XML_ELEMENT_NODE) {
+                        continue;
+                    }
+                    /** @var \DOMElement $sub */
+                    $code = $sub->getAttribute('code');
+                    if ($code === 'a') {
+                        $surname = trim($sub->nodeValue);
+                    } elseif ($code === 'b') {
+                        $forename = trim($sub->nodeValue);
+                    }
+                }
+                $name = $forename !== '' ? $surname . ', ' . $forename : $surname;
+                $name = $clean(rtrim($name, ' ,.'));
+                if ($name !== '' && !in_array($name, $book['authors'], true)) {
+                    $book['authors'][] = $name;
+                }
+            }
+        }
+
+        // Publisher: 214 $c (UNIMARC 2014+), fallback 210 $c
+        $publisher = $getSub('214', 'c') ?? $getSub('210', 'c');
+        $book['publisher'] = $clean(rtrim((string) $publisher, ' ,:;'));
+
+        // Year: 214 $d, fallback 210 $d
+        $year = $getSub('214', 'd') ?? $getSub('210', 'd');
+        if ($year !== null && preg_match('/(\d{4})/', $year, $m)) {
+            $book['year'] = $m[1];
+            $book['pubDate'] = $m[1] . '-01-01';
+        }
+
+        // ISBN (010 $a) — may have dashes; strip non-numeric
+        $isbnValues = $getAllSub('010', 'a');
+        foreach ($isbnValues as $raw) {
+            $isbn = preg_replace('/[^0-9X]/i', '', $raw);
+            if (strlen($isbn) === 13 && $book['isbn13'] === '') {
+                $book['isbn13'] = $isbn;
+            } elseif (strlen($isbn) === 10 && $book['isbn10'] === '') {
+                $book['isbn10'] = $isbn;
+            }
+        }
+
+        // EAN (073 $a)
+        $ean = $getSub('073', 'a');
+        if ($ean !== null && $book['isbn13'] === '') {
+            $eanClean = preg_replace('/[^0-9]/', '', $ean);
+            if (strlen($eanClean) === 13) {
+                $book['isbn13'] = $eanClean;
+            }
+        }
+
+        // Pages (215 $a) — e.g. "324 p." or "324 pages"
+        $extent = $getSub('215', 'a');
+        if ($extent !== null && preg_match('/(\d+)/', $extent, $m)) {
+            $book['pages'] = $m[1];
+        }
+
+        // Language (101 $a) — ISO 639-2/B code
+        $lang = $getSub('101', 'a');
+        if ($lang !== null) {
+            $book['language'] = $this->marcLanguageToName(strtolower(substr($lang, 0, 3)));
+        }
+
+        // Abstract/Description (330 $a)
+        $abstract = $getSub('330', 'a');
+        $book['description'] = $clean($abstract);
+
+        // Dewey (676 $a)
+        $dewey = $getSub('676', 'a');
+        if ($dewey !== null && preg_match('/(\d{3}(?:\.\d+)?)/', $dewey, $m)) {
+            $book['classificazione_dewey'] = $m[1];
+        }
+
+        // Series: 461 $t (linked series title) or 225 $a (series statement);
+        // volume number from 461 $v or 225 $v
+        $seriesTitle = $getSub('461', 't') ?? $getSub('225', 'a');
+        if ($seriesTitle !== null) {
+            $book['collana'] = $clean(rtrim((string) $seriesTitle, ' /:;=.,'));
+        }
+        $volumeNumber = $getSub('461', 'v') ?? $getSub('225', 'v');
+        if ($volumeNumber !== null) {
+            $book['numero_serie'] = mb_substr($clean($volumeNumber), 0, 50);
+        }
+
+        // Subject headings as keywords (600-608 $a)
+        $subjects = [];
+        for ($tag = 600; $tag <= 608; $tag++) {
+            foreach ($getAllSub((string) $tag, 'a') as $subj) {
+                $subj = $clean(rtrim($subj, ' .,;'));
+                if ($subj !== '' && !in_array($subj, $subjects, true)) {
+                    $subjects[] = $subj;
+                }
+            }
+        }
+        if (!empty($subjects)) {
+            $book['keywords'] = implode(', ', $subjects);
+        }
+
+        // Sanitize text fields
+        foreach (['publisher', 'description'] as $field) {
+            $book[$field] = $clean($book[$field]);
+        }
+
+        // Add 'author' field as string for compatibility
+        if (!empty($book['authors'])) {
+            $book['author'] = implode(', ', $book['authors']);
+        }
+
+        return $book;
     }
 
     /**

@@ -35,5 +35,24 @@ CREATE TABLE IF NOT EXISTS `sedi` (
 -- 4. Add index for sede_id in copie (Updater ignores error 1061 if index exists)
 ALTER TABLE `copie` ADD INDEX `idx_sede_id` (`sede_id`);
 
--- 5. Add FK constraint for sede_id (may fail if constraint exists - acceptable)
-ALTER TABLE `copie` ADD CONSTRAINT `copie_ibfk_2` FOREIGN KEY (`sede_id`) REFERENCES `sedi` (`id`) ON DELETE SET NULL;
+-- 5. Add FK constraint for sede_id if missing — check by relation, not by constraint name.
+SET @fk_exists = (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'copie'
+      AND (
+          CONSTRAINT_NAME = 'fk_copie_sede_id'
+          OR (
+              COLUMN_NAME = 'sede_id'
+              AND REFERENCED_TABLE_NAME = 'sedi'
+              AND REFERENCED_COLUMN_NAME = 'id'
+          )
+      )
+);
+SET @sql = IF(
+    @fk_exists = 0,
+    'ALTER TABLE `copie` ADD CONSTRAINT `fk_copie_sede_id` FOREIGN KEY (`sede_id`) REFERENCES `sedi` (`id`) ON DELETE SET NULL',
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;

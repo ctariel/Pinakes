@@ -320,7 +320,7 @@ test.describe.serial('Archives — 50-element CRUD stress test', () => {
             const id = createdIds[i];
             await page.goto(`${BASE}/admin/archives/${id}`);
             await page.waitForLoadState('domcontentloaded');
-            await page.click('form[action*="/delete"] button:has-text("Elimina")');
+            await page.locator(`form[action$="/admin/archives/${id}/delete"] button`).click();
             await page.locator('.swal2-confirm').click();
             await page.waitForURL(/\/admin\/archives$/, { timeout: 10000 });
         }

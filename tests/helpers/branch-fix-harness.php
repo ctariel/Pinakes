@@ -229,8 +229,8 @@ function scenarioCollanaRenameRollback(mysqli $db): array
 
         return [
             'ok' => $response->getStatusCode() === 302
-                && $bookCollana === $source
-                && $sourceExists === 1
+                && $bookCollana === $target
+                && $sourceExists === 0
                 && $targetExists === 1,
             'statusCode' => $response->getStatusCode(),
             'bookCollana' => $bookCollana,

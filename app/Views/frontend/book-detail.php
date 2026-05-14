@@ -177,8 +177,13 @@ if ($bookISBN) {
         $sameAsLinks[] = 'https://www.worldcat.org/isbn/' . $isbn;
     }
 }
+// Add BIBFRAME instance persistent URI as sameAs identifier only when plugin is active
+if (!empty($bibframePluginActive)) {
+    $sameAsLinks[] = absoluteUrl('/id/instance/' . (int) $book['id']);
+}
+// FIX F012: skip empty sameAs to avoid noisy "sameAs": [] in JSON-LD
 if (!empty($sameAsLinks)) {
-    $bookSchema["sameAs"] = $sameAsLinks;
+    $bookSchema['sameAs'] = $sameAsLinks;
 }
 
 // Include ALL authors with proper Schema.org roles
@@ -186,12 +191,46 @@ $schemaAuthors = [];
 $schemaTranslators = [];
 $schemaIllustrators = [];
 $schemaEditors = [];
+$validExternalSameAs = static function (mixed $uri): ?string {
+    if (!is_string($uri)) {
+        return null;
+    }
+    $uri = trim($uri);
+    if ($uri === ''
+        || filter_var($uri, FILTER_VALIDATE_URL) === false
+        || !preg_match('#^https?://#i', $uri)
+        || strpbrk($uri, "<>,\r\n") !== false) {
+        return null;
+    }
+    return $uri;
+};
 foreach ($authors as $authorData) {
     $name = trim(html_entity_decode($authorData['nome'] ?? '', ENT_QUOTES, 'UTF-8'));
     if ($name === '') {
         continue;
     }
     $person = ["@type" => "Person", "name" => $name];
+    // Add VIAF/ISNI sameAs when available (from viaf-authority plugin columns)
+    $personSameAs = [];
+    if (!empty($authorData['viaf_uri']) && ($viafUri = $validExternalSameAs($authorData['viaf_uri'])) !== null) {
+        $personSameAs[] = $viafUri;
+    } elseif (!empty($authorData['viaf_id']) && is_string($authorData['viaf_id'])) {
+        $viafId = trim($authorData['viaf_id']);
+        if (preg_match('/^\d+$/', $viafId)) {
+            $personSameAs[] = 'https://viaf.org/viaf/' . $viafId;
+        }
+    }
+    if (!empty($authorData['isni_uri']) && ($isniUri = $validExternalSameAs($authorData['isni_uri'])) !== null) {
+        $personSameAs[] = $isniUri;
+    } elseif (!empty($authorData['isni_id']) && is_string($authorData['isni_id'])) {
+        $isniNorm = preg_replace('/\s+/', '', $authorData['isni_id']);
+        if ($isniNorm !== null && preg_match('/^\d{15}[\dX]$/i', $isniNorm)) {
+            $personSameAs[] = 'https://isni.org/isni/' . $isniNorm;
+        }
+    }
+    if (!empty($personSameAs)) {
+        $person['sameAs'] = count($personSameAs) === 1 ? $personSameAs[0] : $personSameAs;
+    }
     $role = $authorData['ruolo'] ?? 'principale';
     switch ($role) {
         case 'traduttore':
@@ -1585,20 +1624,22 @@ ob_start();
                         </p>
                     <?php endif; ?>
 
+                    <div class="mb-1">
+                        <span class="badge bg-light text-secondary fw-normal" style="font-size: 0.7rem;">
+                            <i class="fas <?= htmlspecialchars(\App\Support\MediaLabels::icon($resolvedTipoMedia), ENT_QUOTES, 'UTF-8') ?> me-1" aria-hidden="true"></i><?= \App\Support\MediaLabels::tipoMediaDisplayName($resolvedTipoMedia) ?>
+                        </span>
+                    </div>
                     <h1 class="fw-bold mb-3" id="book-title" style="font-size: clamp(1.5rem, 3.5vw, 2.25rem);">
                         <?= htmlspecialchars(html_entity_decode($book['titolo'] ?? '', ENT_QUOTES, 'UTF-8')) ?>
-                        <span class="badge bg-light text-secondary fw-normal" style="font-size: 0.5em; vertical-align: middle;">
-                            <i class="fas <?= \App\Support\MediaLabels::icon($resolvedTipoMedia) ?> me-1"></i><?= \App\Support\MediaLabels::tipoMediaDisplayName($resolvedTipoMedia) ?>
-                        </span>
                     </h1>
 
                     <div class="authors-list" id="book-authors-list">
                         <?php foreach($authors as $author): ?>
                             <a href="<?= htmlspecialchars(route_path('author') . '/' . urlencode(html_entity_decode($author['nome'] ?? '', ENT_QUOTES, 'UTF-8')), ENT_QUOTES, 'UTF-8') ?>" class="text-decoration-none">
-                                <span class="author-item role-<?= $author['ruolo'] ?>">
+                                <span class="author-item role-<?= htmlspecialchars($author['ruolo'], ENT_QUOTES, 'UTF-8') ?>">
                                     <?= htmlspecialchars(html_entity_decode($author['nome'] ?? '', ENT_QUOTES, 'UTF-8')) ?>
                                     <?php if ($author['ruolo'] !== 'principale'): ?>
-                                        (<?= ucfirst($author['ruolo']) ?>)
+                                        (<?= htmlspecialchars(ucfirst($author['ruolo']), ENT_QUOTES, 'UTF-8') ?>)
                                     <?php endif; ?>
                                 </span>
                             </a>
@@ -1613,7 +1654,7 @@ ob_start();
 
                     <div class="mt-4">
                         <span class="availability-badge <?= ($book['copie_disponibili'] > 0) ? 'available' : 'unavailable' ?>">
-                            <i class="fas fa-<?= ($book['copie_disponibili'] > 0) ? 'check-circle' : 'times-circle' ?> me-2"></i>
+                            <i class="fas fa-<?= ($book['copie_disponibili'] > 0) ? 'check-circle' : 'times-circle' ?> me-2" aria-hidden="true"></i>
                             <?= ($book['copie_disponibili'] > 0)
                                 ? ($book['copie_totali'] > 1
                                     ? "{$book['copie_disponibili']}/{$book['copie_totali']} " . __("Disponibili")
@@ -1629,7 +1670,7 @@ ob_start();
                                     <a href="<?= htmlspecialchars(url('/'), ENT_QUOTES, 'UTF-8') ?>" class="text-dark"><?= __("Home") ?></a>
                                 </li>
                                 <li class="breadcrumb-item">
-                                    <a href="<?= $legacyCatalogRoute ?>" class="text-dark-50"><?= __("Catalogo") ?></a>
+                                    <a href="<?= htmlspecialchars($legacyCatalogRoute, ENT_QUOTES, 'UTF-8') ?>" class="text-dark-50"><?= __("Catalogo") ?></a>
                                 </li>
                                 <li class="breadcrumb-item active text-dark" aria-current="page">
                                     <?= htmlspecialchars(html_entity_decode($book['titolo'] ?? '', ENT_QUOTES, 'UTF-8')) ?>
@@ -1663,7 +1704,7 @@ ob_start();
                         <i class="fas fa-heart me-2"></i><span><?= __("Aggiungi ai Preferiti") ?></span>
                       </button>
                     <?php else: ?>
-                      <a href="<?= $loginRoute ?>" class="btn btn-light btn-lg btn-fav-custom">
+                      <a href="<?= htmlspecialchars($loginRoute, ENT_QUOTES, 'UTF-8') ?>" class="btn btn-light btn-lg btn-fav-custom">
                         <i class="fas fa-heart me-2"></i><?= __("Accedi per aggiungere ai Preferiti") ?>
                       </a>
                     <?php endif; ?>
@@ -1685,7 +1726,7 @@ ob_start();
                     <?php if (!empty($_GET['loan_request_success'])): ?>
                         <div class="alert alert-success alert-dismissible fade show" role="alert">
                             <i class="fas fa-check-circle me-2"></i><?= __("Prestito richiesto con successo.") ?>
-                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="<?= __('Chiudi') ?>"></button>
                         </div>
                     <?php elseif (!empty($_GET['loan_error'])): ?>
                         <div class="alert alert-danger alert-dismissible fade show" role="alert">
@@ -1694,13 +1735,13 @@ ob_start();
                               $e = $_GET['loan_error'];
                               echo $e==='not_available' ? __('Nessuna copia disponibile per il periodo richiesto.') : __('Errore nella richiesta di prestito.');
                             ?>
-                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="<?= __('Chiudi') ?>"></button>
                         </div>
                     <?php endif; ?>
                     <?php if (!empty($_GET['reserve_success'])): ?>
                         <div class="alert alert-success alert-dismissible fade show" role="alert">
                             <i class="fas fa-check-circle me-2"></i><?= __("Prenotazione effettuata con successo") ?><?php if(!empty($_GET['reserve_date'])): ?> <?= __("per il giorno") ?> <strong><?= htmlspecialchars($_GET['reserve_date'], ENT_QUOTES, 'UTF-8') ?></strong><?php endif; ?>.
-                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="<?= __('Chiudi') ?>"></button>
                         </div>
                     <?php elseif (!empty($_GET['reserve_error'])): ?>
                         <div class="alert alert-danger alert-dismissible fade show" role="alert">
@@ -1714,7 +1755,7 @@ ob_start();
                               ];
                               echo $reserveErrorMessages[$_GET['reserve_error']] ?? __('Errore nella prenotazione.');
                             ?>
-                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="<?= __('Chiudi') ?>"></button>
                         </div>
                     <?php endif; ?>
                 </div>
@@ -2233,11 +2274,12 @@ ob_start();
                             <?php $relatedCover = ($related['copertina_url'] ?? '') ?: ($related['immagine_copertina'] ?? '') ?: '/uploads/copertine/placeholder.jpg'; ?>
                             <img src="<?= htmlspecialchars(url($relatedCover), ENT_QUOTES, 'UTF-8') ?>"
                                  alt="<?= htmlspecialchars($relatedCoverAlt, ENT_QUOTES, 'UTF-8') ?>"
-                                 class="related-book-image">
+                                 class="related-book-image"
+                                 loading="lazy">
                         </a>
                         <?php if (($related['copie_disponibili'] ?? 0) > 0): ?>
                         <span class="related-availability-badge available-badge">
-                            <i class="fas fa-check-circle"></i>
+                            <i class="fas fa-check-circle" aria-hidden="true"></i>
                             <?php
                             // Hook: Allow plugins to add icons to related book badge (e.g., eBook/audio icons)
                             do_action('book.badge.digital_icons', $related);
@@ -2272,6 +2314,23 @@ ob_start();
 <?php
 $isLoggedJs = !empty($_SESSION['user'] ?? null);
 $libroIdJs = (int)($book['id'] ?? 0);
+
+// FAIR Signposting <link> elements for HTML discovery (complement to HTTP Link headers)
+$headLinks = [
+    [
+        'rel'  => 'type',
+        'href' => 'https://schema.org/' . \App\Support\MediaLabels::schemaOrgType($resolvedTipoMedia),
+    ],
+];
+// Only add BIBFRAME describedby link when the plugin is active
+if (!empty($bibframePluginActive)) {
+    $bibframeBookPath = str_replace('{id}', (string) (int) $book['id'], \App\Support\RouteTranslator::route('bibframe.book'));
+    array_unshift($headLinks, [
+        'rel'  => 'describedby',
+        'type' => 'application/ld+json',
+        'href' => absoluteUrl($bibframeBookPath),
+    ]);
+}
 
 // Prepare SEO variables for layout
 $seoTitle = $metaTitle;

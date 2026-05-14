@@ -59,6 +59,7 @@ class RouteTranslator
         'api_book' => '/api/book',
         'api_home' => '/api/home',
         'language_switch' => '/language',
+        'bibframe.book'   => '/api/bibframe/book/{id}',
     ];
 
     /**
@@ -215,5 +216,18 @@ class RouteTranslator
     public static function hasKey(string $key): bool
     {
         return isset(self::$fallbackRoutes[$key]);
+    }
+
+    /**
+     * Get the list of keys defined in the static fallback routes
+     *
+     * Used by CI to validate that route_path() calls in views are
+     * covered either by the locale JSON files or by the fallback map.
+     *
+     * @return array<int, string> List of fallback route keys
+     */
+    public static function getStaticFallbackKeys(): array
+    {
+        return self::getAvailableKeys();
     }
 }

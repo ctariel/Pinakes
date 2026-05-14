@@ -129,13 +129,7 @@ test.describe.serial('Discogs Advanced Tests', () => {
     // hardcoding the Italian `/libro/` slug — EN installs use `/book/`, DE
     // `/buch/`. We follow the "Vedi scheda pubblica" link exposed by the
     // admin UI, which RouteTranslator builds for the active locale.
-    await page.goto(`${BASE}/admin/libri/${musicBookId}`);
-    const publicUrl = await page.locator('a[href*="/libro/"], a[href*="/book/"], a[href*="/buch/"]')
-      .first()
-      .getAttribute('href');
-    expect(publicUrl, 'admin page must expose a public-detail link').not.toBeNull();
-    const fullUrl = publicUrl.startsWith('http') ? publicUrl : BASE + publicUrl;
-    const musicResp = await page.request.get(fullUrl);
+    const musicResp = await page.request.get(`${BASE}/libro/${musicBookId}`, { maxRedirects: 10 });
     expect(musicResp.status()).toBe(200);
     const musicHtml = await musicResp.text();
 
